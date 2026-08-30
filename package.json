@@ -15,7 +15,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@hiraokahypertools/pst-extractor": "^0.5.0-alpha.2",
+    "@hiraokahypertools/pst-extractor": "github:richardau84/pst-extractor#fdd7a95f371f87940765291e85e20cfc0cbad7ee",
     "@kenjiuno/decompressrtf": "^0.1.4",
     "@kenjiuno/msgreader": "^1.28.0",
     "@tanstack/react-virtual": "^3.14.10",
