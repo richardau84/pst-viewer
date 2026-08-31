@@ -13,6 +13,9 @@ import type {
   OcrTarget,
   SearchFilters,
   SearchHit,
+  SearchSortField,
+  SortDir,
+  SortField,
   SourceIndex,
 } from '../types'
 
@@ -60,10 +63,15 @@ interface AppState {
   contentLoading: boolean
   expanded: Record<string, boolean>
 
+  sortBy: SortField
+  sortDir: SortDir
+
   searchQuery: string
   searchResults: SearchHit[]
   searching: boolean
   searchFilters: SearchFilters
+  searchSortBy: SearchSortField
+  searchSortDir: SortDir
 
   /** Messages picked for PDF export, keyed `${sourceId}:${messageId}`. */
   exportSel: Record<string, { sourceId: string; messageId: string }>
@@ -81,9 +89,11 @@ interface AppState {
   toggleFolder: (sourceId: string, folderId: string) => void
   selectFolder: (sourceId: string, folderId: string) => void
   selectMessage: (messageId: string | null) => void
+  setSort: (sortBy: SortField, sortDir: SortDir) => void
 
   setSearchQuery: (q: string) => void
   setSearchFilters: (filters: SearchFilters) => void
+  setSearchSort: (searchSortBy: SearchSortField, searchSortDir: SortDir) => void
   runSearch: () => void
   clearSearch: () => void
   openHit: (hit: SearchHit) => void
@@ -118,6 +128,42 @@ function writeNum(key: string, n: number) {
   } catch {
     /* ignore */
   }
+}
+
+function compareBy(a: MessageMeta, b: MessageMeta, field: SortField): number {
+  switch (field) {
+    case 'date':
+      return (a.date ?? 0) - (b.date ?? 0)
+    case 'subject':
+      return a.subject.localeCompare(b.subject, undefined, { sensitivity: 'base' })
+    case 'sender':
+      return (a.fromName || a.fromEmail).localeCompare(b.fromName || b.fromEmail, undefined, {
+        sensitivity: 'base',
+      })
+  }
+}
+
+function sortMessages(messages: MessageMeta[], field: SortField, dir: SortDir): MessageMeta[] {
+  const mult = dir === 'asc' ? 1 : -1
+  return [...messages].sort((a, b) => mult * compareBy(a, b, field))
+}
+
+function compareHitBy(a: SearchHit, b: SearchHit, field: SearchSortField): number {
+  switch (field) {
+    case 'relevance':
+      return a.score - b.score
+    case 'date':
+      return (a.date ?? 0) - (b.date ?? 0)
+    case 'subject':
+      return a.subject.localeCompare(b.subject, undefined, { sensitivity: 'base' })
+    case 'sender':
+      return a.from.localeCompare(b.from, undefined, { sensitivity: 'base' })
+  }
+}
+
+function sortHits(hits: SearchHit[], field: SearchSortField, dir: SortDir): SearchHit[] {
+  const mult = dir === 'asc' ? 1 : -1
+  return [...hits].sort((a, b) => mult * compareHitBy(a, b, field))
 }
 
 function firstFolderWithMessages(node: FolderNode): string | null {
@@ -407,10 +453,14 @@ export const useApp = create<AppState>((set, get) => {
     messageContent: null,
     contentLoading: false,
     expanded: {},
+    sortBy: 'date',
+    sortDir: 'desc',
     searchQuery: '',
     searchResults: [],
     searching: false,
     searchFilters: EMPTY_SEARCH_FILTERS,
+    searchSortBy: 'relevance',
+    searchSortDir: 'desc',
     exportSel: {},
     exporting: false,
     navWidth: readNum(NAV_W_KEY, 272),
@@ -494,8 +544,12 @@ export const useApp = create<AppState>((set, get) => {
         .then(({ messages, unreadable }) => {
           const sel = get().selection
           if (sel.sourceId !== sourceId || sel.folderId !== folderId) return
-          messages.sort((a, b) => (b.date ?? 0) - (a.date ?? 0))
-          set({ messages, messagesUnreadable: unreadable, messagesLoading: false })
+          const { sortBy, sortDir } = get()
+          set({
+            messages: sortMessages(messages, sortBy, sortDir),
+            messagesUnreadable: unreadable,
+            messagesLoading: false,
+          })
         })
         .catch(() => {
           const sel = get().selection
@@ -503,6 +557,10 @@ export const useApp = create<AppState>((set, get) => {
             set({ messages: [], messagesUnreadable: 0, messagesLoading: false })
           }
         })
+    },
+
+    setSort: (sortBy, sortDir) => {
+      set((s) => ({ sortBy, sortDir, messages: sortMessages(s.messages, sortBy, sortDir) }))
     },
 
     selectMessage: (messageId) => {
@@ -535,6 +593,14 @@ export const useApp = create<AppState>((set, get) => {
       get().runSearch()
     },
 
+    setSearchSort: (searchSortBy, searchSortDir) => {
+      set((s) => ({
+        searchSortBy,
+        searchSortDir,
+        searchResults: sortHits(s.searchResults, searchSortBy, searchSortDir),
+      }))
+    },
+
     runSearch: () => {
       const query = get().searchQuery.trim()
       if (!query) {
@@ -546,7 +612,8 @@ export const useApp = create<AppState>((set, get) => {
         .search(query, 200, get().searchFilters)
         .then((searchResults) => {
           if (get().searchQuery.trim() !== query) return // stale
-          set({ searchResults, searching: false })
+          const { searchSortBy, searchSortDir } = get()
+          set({ searchResults: sortHits(searchResults, searchSortBy, searchSortDir), searching: false })
         })
         .catch(() => {
           if (get().searchQuery.trim() === query) set({ searchResults: [], searching: false })

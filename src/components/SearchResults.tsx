@@ -4,6 +4,14 @@ import { useApp } from '../store/store'
 import type { SearchHit } from '../types'
 import { formatDateShort } from '../lib/format'
 import { Paperclip, Spinner } from './icons'
+import { SortControl } from './SortControl'
+
+const SORT_OPTIONS = [
+  { value: 'relevance' as const, label: 'Relevance' },
+  { value: 'date' as const, label: 'Date' },
+  { value: 'subject' as const, label: 'Subject' },
+  { value: 'sender' as const, label: 'Sender' },
+]
 
 export function SearchResults() {
   const results = useApp((s) => s.searchResults)
@@ -15,6 +23,9 @@ export function SearchResults() {
   const sources = useApp((s) => s.sources)
   const exportSel = useApp((s) => s.exportSel)
   const toggleExport = useApp((s) => s.toggleExport)
+  const searchSortBy = useApp((s) => s.searchSortBy)
+  const searchSortDir = useApp((s) => s.searchSortDir)
+  const setSearchSort = useApp((s) => s.setSearchSort)
   const anyIndexing = sources.some((s) => s.status === 'ready' && !s.indexed)
   // OCR runs after indexing, so image text becomes searchable a little later.
   const anyOcr = sources.some((s) => s.status === 'ready' && s.indexed && !s.ocrDone)
@@ -36,11 +47,21 @@ export function SearchResults() {
   return (
     <section className="flex h-full min-h-0 flex-col border-r border-slate-800 bg-slate-950">
       <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-          Search results
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Search results
+          </span>
+          {results.length > 0 && (
+            <span className="text-[11px] text-slate-400">{results.length}</span>
+          )}
+        </div>
         {results.length > 0 && (
-          <span className="text-[11px] text-slate-400">{results.length}</span>
+          <SortControl
+            value={searchSortBy}
+            dir={searchSortDir}
+            onChange={setSearchSort}
+            options={SORT_OPTIONS}
+          />
         )}
       </div>
 

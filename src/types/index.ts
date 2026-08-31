@@ -9,6 +9,12 @@ export interface FolderNode {
   children: FolderNode[]
 }
 
+/** Field a message/search list can be ordered by. */
+export type SortField = 'date' | 'subject' | 'sender'
+export type SortDir = 'asc' | 'desc'
+/** Search results can also fall back to full-text relevance (MiniSearch score). */
+export type SearchSortField = SortField | 'relevance'
+
 export interface MessageMeta {
   id: string
   folderId: string

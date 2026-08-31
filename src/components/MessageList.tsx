@@ -4,6 +4,13 @@ import { useApp } from '../store/store'
 import type { MessageMeta } from '../types'
 import { formatDateShort } from '../lib/format'
 import { Paperclip, Spinner } from './icons'
+import { SortControl } from './SortControl'
+
+const SORT_OPTIONS = [
+  { value: 'date' as const, label: 'Date' },
+  { value: 'subject' as const, label: 'Subject' },
+  { value: 'sender' as const, label: 'Sender' },
+]
 
 export function MessageList() {
   const messages = useApp((s) => s.messages)
@@ -15,6 +22,9 @@ export function MessageList() {
   const selectMessage = useApp((s) => s.selectMessage)
   const exportSel = useApp((s) => s.exportSel)
   const toggleExport = useApp((s) => s.toggleExport)
+  const sortBy = useApp((s) => s.sortBy)
+  const sortDir = useApp((s) => s.sortDir)
+  const setSort = useApp((s) => s.setSort)
 
   const parentRef = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({
@@ -27,11 +37,16 @@ export function MessageList() {
   return (
     <section className="flex h-full min-h-0 flex-col border-r border-slate-800 bg-slate-950">
       <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-          Messages
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Messages
+          </span>
+          {messages.length > 0 && (
+            <span className="text-[11px] text-slate-400">{messages.length}</span>
+          )}
+        </div>
         {messages.length > 0 && (
-          <span className="text-[11px] text-slate-400">{messages.length}</span>
+          <SortControl value={sortBy} dir={sortDir} onChange={setSort} options={SORT_OPTIONS} />
         )}
       </div>
 
