@@ -204,3 +204,18 @@ export interface SearchHit {
   hasAttachments: boolean
   score: number
 }
+
+/** Optional narrowing applied on top of a full-text search query. */
+export interface SearchFilters {
+  /** Epoch ms, inclusive lower bound (start of day), or null for no lower bound. */
+  dateFrom: number | null
+  /** Epoch ms, inclusive upper bound (end of day), or null for no upper bound. */
+  dateTo: number | null
+  /** Restrict to one folder in one source, or null for all folders. */
+  folder: { sourceId: string; folderId: string } | null
+  /** Case-insensitive substring match against the sender, or empty for any. */
+  from: string
+  /** Case-insensitive substring match against the To/Cc recipients, or empty for any. */
+  to: string
+  hasAttachments: boolean
+}

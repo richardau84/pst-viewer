@@ -6,7 +6,24 @@ import { buildPrintDocument, printHtmlDocument } from '../lib/printExport'
 import { buildEml, downloadBlob, emlFilename, type EmlAttachment } from '../lib/emlExport'
 import { getCachedOcr, putCachedOcr, hashImageBytes } from '../lib/ocrCache'
 import type { Worker as OcrWorker } from 'tesseract.js'
-import type { FolderNode, MessageContent, MessageMeta, OcrTarget, SearchHit, SourceIndex } from '../types'
+import type {
+  FolderNode,
+  MessageContent,
+  MessageMeta,
+  OcrTarget,
+  SearchFilters,
+  SearchHit,
+  SourceIndex,
+} from '../types'
+
+export const EMPTY_SEARCH_FILTERS: SearchFilters = {
+  dateFrom: null,
+  dateTo: null,
+  folder: null,
+  from: '',
+  to: '',
+  hasAttachments: false,
+}
 
 export type SourceStatus = 'parsing' | 'ready' | 'error'
 
@@ -46,6 +63,7 @@ interface AppState {
   searchQuery: string
   searchResults: SearchHit[]
   searching: boolean
+  searchFilters: SearchFilters
 
   /** Messages picked for PDF export, keyed `${sourceId}:${messageId}`. */
   exportSel: Record<string, { sourceId: string; messageId: string }>
@@ -65,6 +83,7 @@ interface AppState {
   selectMessage: (messageId: string | null) => void
 
   setSearchQuery: (q: string) => void
+  setSearchFilters: (filters: SearchFilters) => void
   runSearch: () => void
   clearSearch: () => void
   openHit: (hit: SearchHit) => void
@@ -135,6 +154,7 @@ function freshState(): Partial<AppState> {
     searchQuery: '',
     searchResults: [],
     searching: false,
+    searchFilters: EMPTY_SEARCH_FILTERS,
     exportSel: {},
     exporting: false,
   }
@@ -390,6 +410,7 @@ export const useApp = create<AppState>((set, get) => {
     searchQuery: '',
     searchResults: [],
     searching: false,
+    searchFilters: EMPTY_SEARCH_FILTERS,
     exportSel: {},
     exporting: false,
     navWidth: readNum(NAV_W_KEY, 272),
@@ -509,6 +530,11 @@ export const useApp = create<AppState>((set, get) => {
 
     setSearchQuery: (searchQuery) => set({ searchQuery }),
 
+    setSearchFilters: (searchFilters) => {
+      set({ searchFilters })
+      get().runSearch()
+    },
+
     runSearch: () => {
       const query = get().searchQuery.trim()
       if (!query) {
@@ -517,7 +543,7 @@ export const useApp = create<AppState>((set, get) => {
       }
       set({ searching: true })
       pst
-        .search(query, 200)
+        .search(query, 200, get().searchFilters)
         .then((searchResults) => {
           if (get().searchQuery.trim() !== query) return // stale
           set({ searchResults, searching: false })

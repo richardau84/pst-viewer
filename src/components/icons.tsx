@@ -112,6 +112,14 @@ export function Search({ className }: IconProps) {
   )
 }
 
+export function Filter({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={1.9}>
+      <path d="M4 5h16l-6 7.5V19l-4 2v-8.5L4 5Z" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 export function Pencil({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={1.8}>

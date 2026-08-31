@@ -42,6 +42,7 @@ import type {
   OcrMatchResult,
   OcrTarget,
   RecipientInfo,
+  SearchFilters,
   SearchHit,
   SourceIndex,
   TaskCard,
@@ -98,9 +99,28 @@ const searchIndex = new MiniSearch<SearchDoc>({
   storeFields: ['sourceId', 'messageId', 'folderId', 'subject', 'from', 'date', 'hasAttachments'],
   searchOptions: { boost: { subject: 3, from: 2 }, fuzzy: 0.2, prefix: true },
 })
+type IndexedSearchResult = ReturnType<typeof searchIndex.search>[number]
 
 /** Keep the indexed docs so OCR text can be merged in later (replace). */
 const searchDocs = new Map<string, SearchDoc>()
+
+/** Whether a search hit satisfies the optional advanced filters. The `to`
+ *  recipients aren't stored on the index result, so fall back to the full doc. */
+function matchesSearchFilters(r: IndexedSearchResult, f: SearchFilters): boolean {
+  const date = (r.date as number | null) ?? null
+  if (f.dateFrom != null && (date == null || date < f.dateFrom)) return false
+  if (f.dateTo != null && (date == null || date > f.dateTo)) return false
+  if (f.folder && (r.sourceId !== f.folder.sourceId || r.folderId !== f.folder.folderId)) return false
+  if (f.hasAttachments && !r.hasAttachments) return false
+  if (f.from.trim() && !String(r.from ?? '').toLowerCase().includes(f.from.trim().toLowerCase())) {
+    return false
+  }
+  if (f.to.trim()) {
+    const doc = searchDocs.get(r.id as string)
+    if (!doc || !doc.to.toLowerCase().includes(f.to.trim().toLowerCase())) return false
+  }
+  return true
+}
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|bmp|webp|tiff?)$/i
 function isImageAttachment(name: string, mime: string): boolean {
@@ -1302,7 +1322,7 @@ const api = {
   },
 
   /** Fuzzy full-text search across all indexed sources. */
-  async search(query: string, limit = 100): Promise<SearchHit[]> {
+  async search(query: string, limit = 100, filters?: SearchFilters): Promise<SearchHit[]> {
     const q = query.trim()
     if (!q) return []
     // Terms with a digit (numbers, ids, reference codes) are specific, so match
@@ -1313,7 +1333,10 @@ const api = {
       combineWith: 'AND',
       fuzzy: (term) => (/\d/.test(term) ? false : 0.2),
     })
-    return results.slice(0, limit).map((r) => ({
+    // Filter before slicing to the limit, so a narrow filter doesn't get starved
+    // by unrelated matches that happened to score higher.
+    const matched = filters ? results.filter((r) => matchesSearchFilters(r, filters)) : results
+    return matched.slice(0, limit).map((r) => ({
       sourceId: r.sourceId as string,
       messageId: r.messageId as string,
       folderId: r.folderId as string,

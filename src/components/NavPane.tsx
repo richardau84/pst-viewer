@@ -88,7 +88,7 @@ function folderRank(node: FolderNode): number {
 }
 
 /** Order folders by rank, breaking ties alphabetically. */
-function sortFolders(nodes: FolderNode[]): FolderNode[] {
+export function sortFolders(nodes: FolderNode[]): FolderNode[] {
   return [...nodes].sort(
     (a, b) =>
       folderRank(a) - folderRank(b) ||
