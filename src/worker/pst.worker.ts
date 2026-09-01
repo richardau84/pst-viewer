@@ -1,6 +1,5 @@
 import * as Comlink from 'comlink'
 import MiniSearch from 'minisearch'
-import { queryTerms } from '../lib/highlight'
 import { parseTnef, type TnefAttachment } from '../lib/tnef'
 import { extractSmime } from '../lib/smime'
 import {
@@ -39,8 +38,6 @@ import type {
   JournalCard,
   MessageContent,
   MessageMeta,
-  OcrMatchResult,
-  OcrTarget,
   RecipientInfo,
   SearchFilters,
   SearchHit,
@@ -64,10 +61,6 @@ interface SourceEntry {
   messages: Map<string, IPSTMessage>
   /** Cached attachment handles per message id, for lazy byte fetching. */
   attachments: Map<string, IPSTAttachment[]>
-  /** OCR text per image, keyed `${kind}:${messageId}:${ref}` (for locating matches). */
-  ocr: Map<string, string>
-  /** Count of data: images in each message body (only messages that have any). */
-  bodyImageCount: Map<string, number>
   /** Search-index document ids contributed by this source (for cleanup). */
   searchIds: Set<string>
   /** Attachments recovered from a winmail.dat (TNEF), keyed by message id. */
@@ -88,20 +81,20 @@ interface SearchDoc {
   to: string
   body: string
   attachments: string
-  ocr: string
   date: number | null
   hasAttachments: boolean
 }
 
 const searchIndex = new MiniSearch<SearchDoc>({
   idField: 'id',
-  fields: ['subject', 'from', 'to', 'body', 'attachments', 'ocr'],
+  fields: ['subject', 'from', 'to', 'body', 'attachments'],
   storeFields: ['sourceId', 'messageId', 'folderId', 'subject', 'from', 'date', 'hasAttachments'],
   searchOptions: { boost: { subject: 3, from: 2 }, fuzzy: 0.2, prefix: true },
 })
 type IndexedSearchResult = ReturnType<typeof searchIndex.search>[number]
 
-/** Keep the indexed docs so OCR text can be merged in later (replace). */
+/** Kept alongside the search index so the `to` filter (not a stored field) can
+ *  still be checked against a hit's full recipient list. */
 const searchDocs = new Map<string, SearchDoc>()
 
 /** Whether a search hit satisfies the optional advanced filters. The `to`
@@ -120,39 +113,6 @@ function matchesSearchFilters(r: IndexedSearchResult, f: SearchFilters): boolean
     if (!doc || !doc.to.toLowerCase().includes(f.to.trim().toLowerCase())) return false
   }
   return true
-}
-
-const IMAGE_EXT = /\.(png|jpe?g|gif|bmp|webp|tiff?)$/i
-function isImageAttachment(name: string, mime: string): boolean {
-  return mime.toLowerCase().startsWith('image/') || IMAGE_EXT.test(name)
-}
-
-// Images embedded straight into the HTML body as base64 (not PST attachments).
-const DATA_IMG_RE = /<img\b[^>]*?\ssrc\s*=\s*(["'])(data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+?)\1/gi
-
-/** The data: image URLs in a body, in document order (matches the rendered DOM). */
-function dataImageUrls(html: string): string[] {
-  if (!html) return []
-  const out: string[] = []
-  DATA_IMG_RE.lastIndex = 0
-  let m: RegExpExecArray | null
-  while ((m = DATA_IMG_RE.exec(html))) out.push(m[2].replace(/\s+/g, ''))
-  return out
-}
-
-/** Decode a `data:image/...;base64,...` URL into bytes + mime. */
-function dataUrlToBytes(dataUrl: string): { mime: string; data: ArrayBuffer } | null {
-  const comma = dataUrl.indexOf(',')
-  if (comma < 0) return null
-  const mime = dataUrl.slice(5, comma).split(';')[0] || 'image/png'
-  try {
-    const bin = atob(dataUrl.slice(comma + 1))
-    const bytes = new Uint8Array(bin.length)
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-    return { mime, data: bytes.buffer }
-  } catch {
-    return null
-  }
 }
 
 function stripHtml(html: string): string {
@@ -270,9 +230,6 @@ async function buildSearchDoc(
   const html = bodies.html
   const body = bodies.text || (html ? stripHtml(html) : '')
 
-  const bodyImgCount = html ? dataImageUrls(html).length : 0
-  if (bodyImgCount) entry.bodyImageCount.set(msgId, bodyImgCount)
-
   let attachments = ''
   if (safe(() => m.hasAttachments, false)) {
     const list = await safeAsync(() => m.getAttachments(), [])
@@ -296,7 +253,6 @@ async function buildSearchDoc(
     to: `${safe(() => m.displayTo, '')} ${safe(() => m.displayCC, '')}`.trim(),
     body,
     attachments,
-    ocr: '',
     date: (delivery ?? submit)?.getTime() ?? null,
     hasAttachments: safe(() => m.hasAttachments, false),
   }
@@ -1012,8 +968,6 @@ const api = {
       folders: new Map(),
       messages: new Map(),
       attachments: new Map(),
-      ocr: new Map(),
-      bodyImageCount: new Map(),
       searchIds: new Set(),
       tnef: new Map(),
     }
@@ -1092,8 +1046,6 @@ const api = {
       folders: new Map(),
       messages: new Map(),
       attachments: new Map(),
-      ocr: new Map(),
-      bodyImageCount: new Map(),
       searchIds: new Set(),
       tnef: new Map(),
     }
@@ -1348,98 +1300,12 @@ const api = {
     }))
   },
 
-  /** Every image to OCR across a source: image attachments plus data: body images. */
-  async listOcrImages(sourceId: string): Promise<OcrTarget[]> {
-    const entry = sources.get(sourceId)
-    if (!entry) return []
-    const out: OcrTarget[] = []
-    for (const [messageId, list] of entry.attachments) {
-      list.forEach((a, index) => {
-        if (safe(() => a.attachMethod, 0) !== Consts.ATTACH_BY_VALUE) return
-        const name = attachmentName(a, index, false)
-        if (isImageAttachment(name, safe(() => a.mimeTag, ''))) {
-          out.push({ messageId, kind: 'att', ref: index })
-        }
-      })
-    }
-    for (const [messageId, count] of entry.bodyImageCount) {
-      for (let i = 0; i < count; i++) out.push({ messageId, kind: 'body', ref: i })
-    }
-    return out
-  },
-
-  /** Bytes for the ref-th data: image in a message body (transferred, zero-copy). */
-  async getBodyImageData(
-    sourceId: string,
-    messageId: string,
-    ref: number,
-  ): Promise<AttachmentData | null> {
-    const entry = sources.get(sourceId)
-    const m = entry?.messages.get(messageId)
-    if (!m) return null
-    const url = dataImageUrls(extractBodies(m).html)[ref]
-    const decoded = url ? dataUrlToBytes(url) : null
-    if (!decoded) return null
-    const result: AttachmentData = { name: `body-image-${ref}`, mime: decoded.mime, data: decoded.data }
-    return Comlink.transfer(result, [decoded.data])
-  },
-
-  /** Merge OCR text into a message's search-index entry, keyed per image so a
-   *  match can be traced back to a specific attachment or body image. */
-  async addOcrText(
-    sourceId: string,
-    messageId: string,
-    kind: OcrTarget['kind'],
-    ref: number,
-    text: string,
-  ): Promise<void> {
-    const entry = sources.get(sourceId)
-    if (entry) entry.ocr.set(`${kind}:${messageId}:${ref}`, text)
-    const id = `${sourceId}:${messageId}`
-    const doc = searchDocs.get(id)
-    if (!doc) return
-    doc.ocr = doc.ocr ? `${doc.ocr} ${text}` : text
-    if (searchIndex.has(id)) searchIndex.replace(doc)
-  },
-
-  /** Which images of a message contain the query text (via OCR). */
-  async ocrMatches(sourceId: string, messageId: string, query: string): Promise<OcrMatchResult> {
-    const empty: OcrMatchResult = { attachmentIndexes: [], bodyImageIndexes: [] }
-    const entry = sources.get(sourceId)
-    if (!entry) return empty
-    const terms = queryTerms(query)
-    if (!terms.length) return empty
-    const attPrefix = `att:${messageId}:`
-    const bodyPrefix = `body:${messageId}:`
-    const attachmentIndexes: number[] = []
-    const bodyImageIndexes: number[] = []
-    for (const [key, text] of entry.ocr) {
-      const low = text.toLowerCase()
-      if (!terms.some((t) => low.includes(t))) continue
-      if (key.startsWith(attPrefix)) attachmentIndexes.push(Number(key.slice(attPrefix.length)))
-      else if (key.startsWith(bodyPrefix)) bodyImageIndexes.push(Number(key.slice(bodyPrefix.length)))
-    }
-    return {
-      attachmentIndexes: attachmentIndexes.sort((a, b) => a - b),
-      bodyImageIndexes: bodyImageIndexes.sort((a, b) => a - b),
-    }
-  },
-
-  /** Free the staged search docs for a source once its OCR pass is done. They
-   *  are kept only so OCR text can be merged into the index; the search index
-   *  keeps its own copy, so dropping them reclaims the duplicated message bodies. */
-  async releaseSearchDocs(sourceId: string): Promise<void> {
-    const entry = sources.get(sourceId)
-    if (!entry) return
-    for (const id of entry.searchIds) searchDocs.delete(id)
-  },
-
   /** Release a source, its PST handle, and its search-index entries. */
   async closeSource(sourceId: string): Promise<void> {
     const entry = sources.get(sourceId)
     if (!entry) return
-    // Remove from the registry first (synchronously) so in-flight indexing or
-    // OCR sees the source as gone and stops adding to the shared index.
+    // Remove from the registry first (synchronously) so in-flight indexing
+    // sees the source as gone and stops adding to the shared index.
     sources.delete(sourceId)
     for (const id of entry.searchIds) {
       if (searchIndex.has(id)) searchIndex.discard(id)

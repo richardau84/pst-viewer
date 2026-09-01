@@ -27,8 +27,6 @@ export function SearchResults() {
   const searchSortDir = useApp((s) => s.searchSortDir)
   const setSearchSort = useApp((s) => s.setSearchSort)
   const anyIndexing = sources.some((s) => s.status === 'ready' && !s.indexed)
-  // OCR runs after indexing, so image text becomes searchable a little later.
-  const anyOcr = sources.some((s) => s.status === 'ready' && s.indexed && !s.ocrDone)
 
   const labelById = useMemo(() => {
     const m: Record<string, string> = {}
@@ -65,12 +63,6 @@ export function SearchResults() {
         )}
       </div>
 
-      {anyOcr && (
-        <div className="shrink-0 border-b border-slate-800 bg-slate-900/40 px-3 py-1.5 text-[11px] text-slate-400">
-          Reading images… text inside pictures is still being added to search.
-        </div>
-      )}
-
       {results.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-sm text-slate-400">
           {searching ? (
@@ -83,10 +75,6 @@ export function SearchResults() {
               <div>No matches for “{query}”.</div>
               {anyIndexing ? (
                 <div className="text-xs text-slate-400">Still indexing, try again shortly.</div>
-              ) : anyOcr ? (
-                <div className="text-xs text-slate-400">
-                  Still reading images; text inside pictures may not be searchable yet.
-                </div>
               ) : null}
             </>
           )}

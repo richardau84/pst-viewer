@@ -257,15 +257,6 @@ function SourceTree({ source }: { source: Source }) {
       {source.status === 'ready' && !source.indexed && source.indexProgress && (
         <p className="px-3 pb-1 text-[11px] text-slate-400">Indexing for search… {pct}%</p>
       )}
-      {source.status === 'ready' &&
-        source.indexed &&
-        !source.ocrDone &&
-        source.ocrProgress &&
-        source.ocrProgress.total > 0 && (
-          <p className="px-3 pb-1 text-[11px] text-slate-400">
-            Reading images… {source.ocrProgress.done}/{source.ocrProgress.total}
-          </p>
-        )}
       {source.status === 'ready' && source.index && (
         <ul className="ml-5">
           {sortFolders(source.index.rootFolder.children).map((child) => (

@@ -4,13 +4,10 @@ import { pst } from '../worker/client'
 import { scanZipForPsts } from '../lib/zip'
 import { buildPrintDocument, printHtmlDocument } from '../lib/printExport'
 import { buildEml, downloadBlob, emlFilename, type EmlAttachment } from '../lib/emlExport'
-import { getCachedOcr, putCachedOcr, hashImageBytes } from '../lib/ocrCache'
-import type { Worker as OcrWorker } from 'tesseract.js'
 import type {
   FolderNode,
   MessageContent,
   MessageMeta,
-  OcrTarget,
   SearchFilters,
   SearchHit,
   SearchSortField,
@@ -42,8 +39,6 @@ export interface Source {
   index?: SourceIndex
   indexProgress?: { done: number; total: number }
   indexed?: boolean
-  ocrProgress?: { done: number; total: number }
-  ocrDone?: boolean
 }
 
 interface Selection {
@@ -207,7 +202,7 @@ function freshState(): Partial<AppState> {
 }
 
 export const useApp = create<AppState>((set, get) => {
-  /** Register a source and run the shared open → index → OCR flow. */
+  /** Register a source and run the shared open → index flow. */
   const openSource = (
     seed: { fileName: string; size: number; label: string },
     open: (id: string) => Promise<SourceIndex>,
@@ -254,8 +249,6 @@ export const useApp = create<AppState>((set, get) => {
             set((s) => ({
               sources: s.sources.map((src) => (src.id === id ? { ...src, indexed: true } : src)),
             }))
-            // Then OCR this mailbox's images so their text is searchable too.
-            enqueueOcr(id)
           })
       })
       .catch((err: unknown) => {
@@ -354,94 +347,6 @@ export const useApp = create<AppState>((set, get) => {
           ),
         }))
       })
-  }
-
-  // Skip images smaller than this for OCR: tracking pixels, spacers and tiny
-  // icons hold no readable text but dominate image counts in real mail.
-  const MIN_OCR_BYTES = 1024
-
-  // Automatic background OCR: after a mailbox is indexed, recognize text in its
-  // image attachments so it becomes searchable too. One image at a time, reusing
-  // a single Tesseract worker across queued mailboxes; never blocks the UI.
-  const ocrQueue: string[] = []
-  let ocrActive = false
-  const hasSource = (id: string) => get().sources.some((s) => s.id === id)
-  const patchSource = (id: string, patch: Partial<Source>) =>
-    set((s) => ({ sources: s.sources.map((src) => (src.id === id ? { ...src, ...patch } : src)) }))
-
-  const drainOcr = async () => {
-    if (ocrActive) return
-    ocrActive = true
-    let lib: typeof import('../lib/ocr') | null = null
-    let worker: OcrWorker | null = null
-    try {
-      while (ocrQueue.length) {
-        const sourceId = ocrQueue.shift() as string
-        if (!hasSource(sourceId)) continue
-        let targets: OcrTarget[] = []
-        try {
-          targets = await pst.listOcrImages(sourceId)
-        } catch {
-          /* ignore */
-        }
-        if (!targets.length) {
-          patchSource(sourceId, { ocrDone: true })
-          void pst.releaseSearchDocs(sourceId)
-          continue
-        }
-        if (!lib) lib = await import('../lib/ocr').catch(() => null)
-        if (!worker && lib) worker = await lib.createOcrWorker().catch(() => null)
-        if (!lib || !worker) {
-          patchSource(sourceId, { ocrDone: true }) // engine unavailable; skip silently
-          void pst.releaseSearchDocs(sourceId)
-          continue
-        }
-        patchSource(sourceId, { ocrProgress: { done: 0, total: targets.length } })
-        for (let i = 0; i < targets.length; i++) {
-          if (!hasSource(sourceId)) break
-          const t = targets[i]
-          try {
-            const data =
-              t.kind === 'body'
-                ? await pst.getBodyImageData(sourceId, t.messageId, t.ref)
-                : await pst.getAttachmentData(sourceId, t.messageId, t.ref)
-            // Skip tiny images: too small to hold readable text (see MIN_OCR_BYTES).
-            if (data && data.data.byteLength >= MIN_OCR_BYTES) {
-              // Reuse cached text (keyed by image content) so a re-opened
-              // mailbox, or an image shared across emails, is read only once.
-              const hash = await hashImageBytes(data.data)
-              let text = hash ? await getCachedOcr(hash) : undefined
-              if (text === undefined) {
-                const blob = new Blob([data.data], { type: data.mime || 'image/png' })
-                text = await lib.recognizeImage(worker, blob)
-                if (hash) await putCachedOcr(hash, text)
-              }
-              if (text) await pst.addOcrText(sourceId, t.messageId, t.kind, t.ref, text)
-            }
-          } catch {
-            /* skip unreadable image */
-          }
-          patchSource(sourceId, { ocrProgress: { done: i + 1, total: targets.length } })
-        }
-        patchSource(sourceId, { ocrDone: true, ocrProgress: undefined })
-        void pst.releaseSearchDocs(sourceId)
-        if (get().searchQuery.trim()) get().runSearch()
-      }
-    } finally {
-      if (worker) {
-        try {
-          await worker.terminate()
-        } catch {
-          /* ignore */
-        }
-      }
-      ocrActive = false
-      if (ocrQueue.length) void drainOcr()
-    }
-  }
-  const enqueueOcr = (sourceId: string) => {
-    if (!ocrQueue.includes(sourceId)) ocrQueue.push(sourceId)
-    void drainOcr()
   }
 
   return {
@@ -659,8 +564,8 @@ export const useApp = create<AppState>((set, get) => {
       const picks = Object.values(get().exportSel)
       if (!picks.length || get().exporting) return
       set({ exporting: true })
-      // Never let the buttons stay disabled if a fetch stalls (e.g. the worker
-      // is busy with background OCR); the user can always retry.
+      // Never let the buttons stay disabled if a fetch stalls; the user can
+      // always retry.
       const safety = setTimeout(() => set({ exporting: false }), 30000)
       // allSettled, not all: one unloadable message must not sink the whole merge.
       Promise.allSettled(picks.map((p) => pst.getMessageContent(p.sourceId, p.messageId)))

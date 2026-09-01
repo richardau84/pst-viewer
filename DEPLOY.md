@@ -182,8 +182,6 @@ Put it behind HTTPS (a CDN like CloudFront / Cloudflare in front is fine).
 
 - `.wasm` files must be served as `application/wasm`, and `.mjs` as JavaScript.
   Modern static servers and CDNs do this out of the box.
-- `eng.traineddata.gz` (the bundled OCR model) must be delivered as a plain file.
-  Don't configure the server to add a `Content-Encoding: gzip` header to it.
 - A fallback to `index.html` for unknown paths is nice to have but not required,
   since the app has no server-side routes.
 

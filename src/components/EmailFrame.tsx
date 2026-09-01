@@ -13,7 +13,6 @@ a{color:#0b57d0}
 table{max-width:100%}
 blockquote{border-left:3px solid #ddd;margin:0 0 0 8px;padding-left:12px;color:#555}
 mark.pstv-hit{background:#facc15;color:#111;border-radius:2px}
-img.pstv-img-hit{border:3px solid #facc15 !important;border-radius:3px}
 html{scrollbar-width:auto;scrollbar-color:#94a3b8 #e2e8f0}
 ::-webkit-scrollbar{width:14px;height:14px}
 ::-webkit-scrollbar-track{background:#e2e8f0}
@@ -24,40 +23,13 @@ html{scrollbar-width:auto;scrollbar-color:#94a3b8 #e2e8f0}
 
 const MAX_MARKS = 500
 
-/** Remove any highlight wrappers / outlines we previously added. */
+/** Remove any highlight wrappers we previously added. */
 function clearHighlights(doc: Document) {
-  doc.querySelectorAll('img.pstv-img-hit').forEach((img) => img.classList.remove('pstv-img-hit'))
   const marks = doc.querySelectorAll('mark.pstv-hit')
   if (marks.length) {
     marks.forEach((m) => m.replaceWith(doc.createTextNode(m.textContent ?? '')))
     doc.body?.normalize()
   }
-}
-
-/**
- * Outline matched images: cid/blob images by `urls`, and data: body images by
- * their position among data: images (`bodyIndexes`, in document order, which
- * matches how the worker counts them). Returns the count.
- */
-function applyImageHighlights(doc: Document, urls: string[], bodyIndexes: number[]): number {
-  if (!doc.body || (!urls.length && !bodyIndexes.length)) return 0
-  const urlSet = new Set(urls)
-  const bodySet = new Set(bodyIndexes)
-  let count = 0
-  let dataIdx = 0
-  for (const img of Array.from(doc.images || [])) {
-    const attr = img.getAttribute('src') ?? ''
-    let hit = urlSet.has(img.src) || urlSet.has(attr)
-    if (/^data:/i.test(attr) || /^data:/i.test(img.src)) {
-      if (bodySet.has(dataIdx)) hit = true
-      dataIdx++
-    }
-    if (hit) {
-      img.classList.add('pstv-img-hit')
-      count++
-    }
-  }
-  return count
 }
 
 /** Wrap matches of `terms` in <mark> across text nodes. Returns the match count. */
@@ -118,20 +90,15 @@ function applyHighlights(doc: Document, terms: string[]): number {
 export function EmailFrame({
   html,
   terms = [],
-  highlightImageUrls = [],
-  highlightBodyImageIndexes = [],
   onImageClick,
 }: {
   html: string
   terms?: string[]
-  highlightImageUrls?: string[]
-  highlightBodyImageIndexes?: number[]
   onImageClick?: (src: string) => void
 }) {
   const ref = useRef<HTMLIFrameElement>(null)
   const termsKey = terms.join('')
 
-  const imgKey = highlightImageUrls.join('') + '|' + highlightBodyImageIndexes.join(',')
   const scrolledForHtmlRef = useRef('')
   const onImageClickRef = useRef(onImageClick)
   onImageClickRef.current = onImageClick
@@ -186,7 +153,7 @@ export function EmailFrame({
     // itself is sized to its content) so the first hit is comfortably in view.
     const scrollToFirstHit = () => {
       const doc = iframe.contentDocument
-      const target = doc?.querySelector('mark.pstv-hit, img.pstv-img-hit') as HTMLElement | null
+      const target = doc?.querySelector('mark.pstv-hit') as HTMLElement | null
       if (!target) return
       let container: HTMLElement | null = iframe.parentElement
       while (container && container !== document.body) {
@@ -210,11 +177,9 @@ export function EmailFrame({
       if (!doc || !doc.body) return
       clearHighlights(doc)
       const textCount = terms.length ? applyHighlights(doc, terms) : 0
-      const imgCount = applyImageHighlights(doc, highlightImageUrls, highlightBodyImageIndexes)
-      // Auto-scroll to the first hit once per opened message (matches can be a
-      // text mark or an outlined image, and OCR matches can resolve after load).
-      // Not on later term tweaks for the same body, which would yank the scroll.
-      if ((textCount > 0 || imgCount > 0) && scrolledForHtmlRef.current !== html) {
+      // Auto-scroll to the first hit once per opened message. Not on later term
+      // tweaks for the same body, which would yank the scroll.
+      if (textCount > 0 && scrolledForHtmlRef.current !== html) {
         scrolledForHtmlRef.current = html
         timers.push(window.setTimeout(scrollToFirstHit, 400))
       }
@@ -292,7 +257,7 @@ export function EmailFrame({
     // `terms` is captured via the stable `termsKey`; depending on the array
     // itself would re-run this effect on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [html, termsKey, imgKey])
+  }, [html, termsKey])
 
   return (
     <iframe

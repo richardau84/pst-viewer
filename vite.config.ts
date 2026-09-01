@@ -45,8 +45,8 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Precache the app shell + workers (incl. pdf.js .mjs) + OCR engine/model
-        // (.wasm/.gz) so everything — including image OCR — works fully offline.
+        // Precache the app shell + workers (incl. pdf.js .mjs) so everything
+        // works fully offline.
         globPatterns: ['**/*.{js,mjs,css,html,svg,png,wasm,gz,woff,woff2}'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         cleanupOutdatedCaches: true,

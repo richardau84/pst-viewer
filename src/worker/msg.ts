@@ -21,7 +21,7 @@ import type { AppointmentCard, ContactCard } from '../types'
  * Outlook `.msg` support: parse a standalone .msg file (CFB/MAPI, via
  * MsgReader) and wrap the result in objects that present the same surface as
  * pst-extractor's message/folder/attachment. The rest of the worker (bodies,
- * search indexing, OCR, TNEF/S-MIME unpacking, EML export, nested messages)
+ * search indexing, TNEF/S-MIME unpacking, EML export, nested messages)
  * then works on .msg items unchanged.
  *
  * Only the members the worker actually reads are implemented; the adapters are

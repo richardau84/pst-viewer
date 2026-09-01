@@ -3,18 +3,16 @@ import type { AttachmentMeta } from '../../types'
 import { formatBytes } from '../../lib/format'
 import { categoryFromNameMime, type PreviewCategory } from '../../lib/detectType'
 import { AttachmentPreview } from './AttachmentPreview'
-import { FileGeneric, MailIcon, Search } from '../icons'
+import { FileGeneric, MailIcon } from '../icons'
 
 export function AttachmentBar({
   sourceId,
   messageId,
   attachments,
-  ocrHits = [],
 }: {
   sourceId: string
   messageId: string
   attachments: AttachmentMeta[]
-  ocrHits?: number[]
 }) {
   const [openIndex, setOpenIndex] = useState<number | null>(null)
   const openMeta = openIndex == null ? null : attachments.find((a) => a.index === openIndex) ?? null
@@ -23,12 +21,7 @@ export function AttachmentBar({
     <div className="border-b border-slate-800 bg-slate-900/40 px-6 py-2.5">
       <div className="flex flex-wrap gap-2">
         {attachments.map((a) => (
-          <Chip
-            key={a.index}
-            meta={a}
-            matched={ocrHits.includes(a.index)}
-            onClick={() => setOpenIndex(a.index)}
-          />
+          <Chip key={a.index} meta={a} onClick={() => setOpenIndex(a.index)} />
         ))}
       </div>
 
@@ -56,26 +49,14 @@ const CATEGORY_BADGE: Record<PreviewCategory, string> = {
   other: 'bg-slate-500/20 text-slate-300',
 }
 
-function Chip({
-  meta,
-  matched,
-  onClick,
-}: {
-  meta: AttachmentMeta
-  matched?: boolean
-  onClick: () => void
-}) {
+function Chip({ meta, onClick }: { meta: AttachmentMeta; onClick: () => void }) {
   const category = meta.isEmbeddedMessage ? 'email' : categoryFromNameMime(meta.name, meta.mime)
   const ext = meta.isEmbeddedMessage ? 'EML' : extLabel(meta.name)
   return (
     <button
       onClick={onClick}
-      className={`group flex max-w-[18rem] items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition ${
-        matched
-          ? 'border-yellow-400/70 bg-yellow-400/10 ring-2 ring-yellow-400/60 hover:bg-yellow-400/15'
-          : 'border-slate-700 bg-slate-800/60 hover:border-slate-600 hover:bg-slate-700/60'
-      }`}
-      data-tip={matched ? `${meta.name} (contains your search text)` : meta.name}
+      className="group flex max-w-[18rem] items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1.5 text-left transition hover:border-slate-600 hover:bg-slate-700/60"
+      data-tip={meta.name}
     >
       <span
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${CATEGORY_BADGE[category]}`}
@@ -94,7 +75,6 @@ function Chip({
           <span className="block text-[11px] text-slate-400">{formatBytes(meta.size)}</span>
         )}
       </span>
-      {matched && <Search className="ml-0.5 h-3.5 w-3.5 shrink-0 text-yellow-300" />}
     </button>
   )
 }

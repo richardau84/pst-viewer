@@ -29,7 +29,6 @@
     "postal-mime": "^3.0.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "tesseract.js": "^7.0.0",
     "xlsx": "^0.18.5",
     "zustand": "^5.0.15"
   },
