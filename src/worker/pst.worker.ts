@@ -109,8 +109,11 @@ const forgottenIds = new Set<string>()
 
 /** Bump whenever the folder walk changes shape, so trees cached by an older
  *  build are re-parsed instead of shown. Bumped to 2 for the OST mailbox-root
- *  fix (see `findMailboxRoot`), whose caches hold a wrong, one-folder tree. */
-const TREE_VERSION = 2
+ *  fix (see `findIpmSubtreeId`), whose caches hold a wrong, one-folder tree,
+ *  and to 4 for `reduceToMailbox` — 2 and 3 alike cache an OST's store plumbing
+ *  (`Root - Mailbox`, `IPM_SUBTREE`, `Finder`, …) as visible folders — and to 5
+ *  for `pickIpmSubtree`, since 4 can cache an empty tree on a multi-store OST. */
+const TREE_VERSION = 5
 
 /** Bump whenever body extraction (stripHtml/extractBodies/RTF-de-encapsulation/
  *  TNEF/S-MIME) or the MiniSearch field config changes — a cached SearchDoc's
@@ -405,8 +408,8 @@ function nodeIdFromEntryId(value: unknown): number | null {
 }
 
 /**
- * Find the mailbox root — the IPM subtree Outlook shows as the top of the
- * data file, holding Inbox/Sent Items/Calendar/… .
+ * Find the IPM subtree — the container Outlook shows as the top of the data
+ * file, holding Inbox/Sent Items/Calendar/… — and return its node id.
  *
  * It has no fixed node id. MS-PST points at it with PidTagIpmSubTreeEntryId
  * (0x35E0) on the message store, which is what we read here. pst-extractor's
@@ -415,45 +418,135 @@ function nodeIdFromEntryId(value: unknown): number | null {
  * id lands on some arbitrary folder (in practice Calendar). Trusting it there
  * opened an OST showing only that one folder's subtree, hiding all the mail.
  *
- * Returns null when neither route yields a plausible root; the caller then
- * falls back to walking the true root folder.
+ * Returns null when neither route yields an id; `reduceToMailbox` then falls
+ * back to recognising the subtree by name.
  */
-async function findMailboxRoot(pstFile: IPSTFile): Promise<IPSTFolder | null> {
-  const root = await safeAsync(() => pstFile.getRootFolder(), null)
-  if (!root) return null
-  const children = await safeAsync(() => root.getSubFolders(), [] as IPSTFolder[])
-  const nodeIdOf = (f: IPSTFolder) => safe(() => f.primaryNodeId, -1)
-
+async function findIpmSubtreeId(pstFile: IPSTFile): Promise<string | null> {
+  // The spec route, and the only one that holds for both file types. Returned
+  // unvalidated on purpose: the subtree's depth under the root varies (a `.pst`
+  // has it as a direct child, an `.ost` nests it under "Root - Mailbox"), so
+  // there is nothing cheap to check it against here. `reduceToMailbox` accepts
+  // the id only if a folder carrying it turns up in the walked tree.
   const wanted = await safeAsync(async () => {
     const store = await pstFile.getMessageStore()
     return nodeIdFromEntryId(safe(() => store.getProperty(0x35e0)?.value, undefined))
   }, null)
-  if (wanted !== null) {
-    const hit = children.find((c) => nodeIdOf(c) === wanted)
-    if (hit) return hit
-  }
+  if (wanted !== null) return String(wanted)
 
-  // No usable entry id: fall back to the library's hardcoded lookup, but only
-  // when what it returns really is a direct child of the root folder — the
-  // one thing the IPM subtree always is, and the wrong-folder case never is.
+  // No entry id. The library's hardcoded lookup is the only language-independent
+  // route left for a `.pst`, whose container name is localized — but take it
+  // only when what it returns really is a direct child of the root folder. That
+  // is what the `.pst` container always is, and what the `.ost` mis-hit (an
+  // ordinary folder nested well below the root) never is.
+  const root = await safeAsync(() => pstFile.getRootFolder(), null)
+  const children = root
+    ? await safeAsync(() => root.getSubFolders(), [] as IPSTFolder[])
+    : ([] as IPSTFolder[])
+  const nodeIdOf = (f: IPSTFolder) => safe(() => f.primaryNodeId, -1)
   const top = await safeAsync(() => pstFile.getTopOfOutlookDataFile(), null)
-  if (top && children.some((c) => nodeIdOf(c) === nodeIdOf(top))) return top
+  const topId = top ? nodeIdOf(top) : -1
+  if (topId !== -1 && children.some((c) => nodeIdOf(c) === topId)) return String(topId)
 
+  // Only the name match is left, and it is English-only — so say why we got
+  // here. Never on a healthy file, so a normal open stays silent.
+  console.warn(
+    '[pst] no IPM subtree id: PidTagIpmSubTreeEntryId (0x35E0) missing or unreadable on the',
+    'message store, and getTopOfOutlookDataFile() is not a child of the root — root children:',
+    children.map((c) => `${safe(() => c.displayName, '?')}#${nodeIdOf(c)}`).join(', ') || '(none)',
+  )
   return null
 }
 
-// Outlook shows folders directly under the mailbox, not under the internal
-// "Top of Personal Folders" container; lift that container's children up a level.
-function liftRootContainer(node: FolderNode): FolderNode {
-  const children: FolderNode[] = []
-  for (const child of node.children) {
-    if (/^top of (personal folders|outlook data file)\b/i.test(child.name)) {
-      children.push(...child.children)
-    } else {
-      children.push(child)
-    }
-  }
-  return { ...node, children }
+/** Names the IPM subtree goes by, for when its id could not be resolved:
+ *  Outlook's localized container in a `.pst`, and the raw internal name an
+ *  `.ost` carries. */
+const IPM_SUBTREE_NAME = /^(top of (personal folders|outlook data file)\b|ipm_subtree\s*$)/i
+
+/** Messages in a folder and everything beneath it. */
+function countMessages(node: FolderNode): number {
+  return node.children.reduce((n, c) => n + countMessages(c), node.messageCount)
+}
+
+/** Every folder id in a tree. */
+function collectFolderIds(node: FolderNode, out = new Set<string>()): Set<string> {
+  out.add(node.id)
+  for (const child of node.children) collectFolderIds(child, out)
+  return out
+}
+
+/** A folder located in a built tree, with the parent it hangs off. */
+type FoundNode = { node: FolderNode; parent: FolderNode | null }
+
+/** Every node in a built tree matching `match`, each with its parent. */
+function findNodes(
+  node: FolderNode,
+  match: (n: FolderNode) => boolean,
+  parent: FolderNode | null = null,
+  out: FoundNode[] = [],
+): FoundNode[] {
+  if (match(node)) out.push({ node, parent })
+  for (const child of node.children) findNodes(child, match, node, out)
+  return out
+}
+
+/**
+ * Pick the IPM subtree holding the user's mail.
+ *
+ * A file can contain more than one. An OST cached from Exchange carries a store
+ * root per store — `Root - Mailbox` for the mailbox, `Root - Public` for public
+ * folders — and each has its own `IPM_SUBTREE` child. Taking the first match in
+ * walk order is a coin toss decided by the order the provider happens to
+ * enumerate the root's children in: on the OSTs this was written for, the empty
+ * public subtree came first, so the folder pane came up completely blank.
+ *
+ * So: trust the store's own PidTagIpmSubTreeEntryId when the folder it names
+ * actually holds mail, and otherwise take the fullest subtree we can see. Both
+ * beat walk order, and an all-empty mailbox still resolves — to the id match, or
+ * to the first name match if there was no id at all.
+ */
+function pickIpmSubtree(root: FolderNode, subtreeId: string | null): FoundNode | null {
+  const byId = subtreeId !== null ? (findNodes(root, (n) => n.id === subtreeId)[0] ?? null) : null
+  if (byId && countMessages(byId.node) > 0) return byId
+
+  const named = findNodes(root, (n) => IPM_SUBTREE_NAME.test(n.name))
+  const candidates = byId ? [byId, ...named.filter((c) => c.node !== byId.node)] : named
+  if (candidates.length === 0) return null
+  return candidates.reduce((best, c) =>
+    countMessages(c.node) > countMessages(best.node) ? c : best,
+  )
+}
+
+/**
+ * Reduce a walked tree to the mailbox Outlook shows.
+ *
+ * The user's folders live in the IPM subtree, so its parent is the real mailbox
+ * root: the subtree's children move up to the top level and its siblings — store
+ * plumbing like `~MAPISP(Internal)`, `Common Views`, an OST's `Drizzle` sync
+ * scratch and the `Finder`/Search Root container — are dropped.
+ *
+ * The subtree is found at any depth (see `pickIpmSubtree`), never assumed to be
+ * a direct child of the root: a `.pst` puts it directly under the root folder,
+ * but an `.ost` nests it one level further down, under `Root - Mailbox`. That
+ * extra level is exactly what `NavPane` was showing along with the plumbing.
+ *
+ * Siblings are not dropped by name, though. Exchange keeps the Recoverable
+ * Items subtree (Deletions, Purges, Versions, …) outside the IPM subtree, and
+ * in a mailbox investigation that is evidence, not noise — so a sibling
+ * survives whenever it holds a message anywhere beneath it. Plumbing never does.
+ *
+ * With no subtree to find, the tree is returned untouched: its children already
+ * are the mailbox, and filtering there would drop the user's own empty folders.
+ */
+function reduceToMailbox(root: FolderNode, subtreeId: string | null): FolderNode {
+  const hit = pickIpmSubtree(root, subtreeId)
+  if (!hit) return root
+  const { node: subtree, parent } = hit
+  const siblings = (parent?.children ?? []).filter((c) => c !== subtree && countMessages(c) > 0)
+  const children = [...subtree.children, ...siblings]
+  // A reduction that empties the folder pane is never an improvement on leaving
+  // it alone: show the raw tree, plumbing and all, rather than nothing.
+  if (children.length === 0 && root.children.length > 0) return root
+  return { ...(parent ?? subtree), children }
 }
 
 async function buildSearchDoc(
@@ -1297,22 +1390,36 @@ const api = {
     }
     sources.set(sourceId, entry)
 
-    // Start from the IPM subtree ("Top of Personal Folders"), the user's real
-    // mailbox root. Internal containers like Search Root are siblings of it under
-    // the true root, so starting here drops them in any language. Fall back to the
-    // raw root (lifting the localized top container) only if the subtree is absent.
-    const top = await findMailboxRoot(pstFile)
-    const rootNode = top
-      ? await buildFolderTree(top, entry)
-      : liftRootContainer(await buildFolderTree(await pstFile.getRootFolder(), entry))
+    // Walk the true root, then reduce it to the mailbox Outlook shows. Walking
+    // from the root rather than straight from the IPM subtree costs a handful of
+    // extra property reads for the plumbing subtrees, and buys the one thing
+    // starting at the subtree cannot: the chance to keep a non-IPM sibling that
+    // holds mail (see `reduceToMailbox`).
+    const subtreeId = await findIpmSubtreeId(pstFile)
+    const rawTree = await buildFolderTree(await pstFile.getRootFolder(), entry)
+    const rootNode = reduceToMailbox(rawTree, subtreeId)
+    if (import.meta.env.DEV) {
+      // Which store root won, and what it was picked out of — the two OST bugs
+      // here (an extra root level, and a rival empty public-folder subtree) were
+      // both invisible from the folder pane alone.
+      console.info(
+        `[pst] ${file.name}: 0x35E0 subtree id ${subtreeId ?? '(none)'};`,
+        `walked "${rawTree.name}" [${rawTree.children.map((c) => c.name).join(', ')}];`,
+        `showing "${rootNode.name}" with ${rootNode.children.length} top-level folders,`,
+        `${countMessages(rootNode)} messages`,
+      )
+    }
+    // The walk registers a handle for every folder it touched, plumbing included,
+    // and `indexSource` enumerates that map rather than the tree — so leaving the
+    // dropped folders behind would index folders the user cannot see and let a
+    // search hit report a folder id absent from the tree.
+    const displayed = collectFolderIds(rootNode)
+    for (const id of [...entry.folders.keys()]) {
+      if (!displayed.has(id)) entry.folders.delete(id)
+    }
     markReady()
 
-    let totalMessages = 0
-    const sum = (n: FolderNode) => {
-      totalMessages += n.messageCount
-      n.children.forEach(sum)
-    }
-    sum(rootNode)
+    const totalMessages = countMessages(rootNode)
 
     // Prefer the mailbox's own name when it is meaningful, but Outlook gives
     // every personal data file a generic name ("Personal Folders" etc.); in that
@@ -1322,7 +1429,7 @@ const api = {
       '',
     )
     // Name of the root we actually walked — never getTopOfOutlookDataFile()'s,
-    // which on an OST is an unrelated folder (see `findMailboxRoot`).
+    // which on an OST is an unrelated folder (see `findIpmSubtreeId`).
     const topName = rootNode.name
     const ownerName = [storeName, topName].find((n) => n && !isGenericStoreName(n)) ?? ''
 
