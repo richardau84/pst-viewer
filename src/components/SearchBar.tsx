@@ -30,6 +30,7 @@ export function SearchBar() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search all mail…"
+          title={'Words match loosely; put "quotes around a phrase" to match it exactly.'}
           className="w-full rounded-lg border border-slate-700 bg-slate-800/60 py-2 pl-9 pr-9 text-sm text-slate-100 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
         />
         {searching ? (

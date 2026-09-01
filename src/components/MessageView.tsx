@@ -4,7 +4,7 @@ import type { MessageContent, RecipientInfo } from '../types'
 import { formatDate, formatRecipient } from '../lib/format'
 import { categoryFromNameMime } from '../lib/detectType'
 import { sanitizeEmailHtml } from '../lib/sanitizeHtml'
-import { queryTerms, termsRegExp } from '../lib/highlight'
+import { queryTerms, termsRegExp, type QueryTerm } from '../lib/highlight'
 import { EmailFrame } from './EmailFrame'
 import { ImageLightbox } from './ImageLightbox'
 import { AttachmentBar } from './attachments/AttachmentBar'
@@ -195,9 +195,9 @@ export function MessageView({
 }
 
 /** Plain-text body with the active search terms highlighted; scrolls to the first. */
-function HighlightedText({ text, terms }: { text: string; terms: string[] }) {
+function HighlightedText({ text, terms }: { text: string; terms: QueryTerm[] }) {
   const firstRef = useRef<HTMLElement>(null)
-  const key = terms.join('')
+  const key = terms.map((t) => t.text).join('')
   useEffect(() => {
     firstRef.current?.scrollIntoView({ block: 'center' })
   }, [text, key])

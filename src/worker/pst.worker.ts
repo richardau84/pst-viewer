@@ -5,6 +5,7 @@ import { extractSmime } from '../lib/smime'
 import { fingerprint } from '../lib/files'
 import { createChunkReader } from '../lib/chunkReader'
 import { hasActiveFilters } from '../lib/searchFilters'
+import { parseQuery, phraseRegExp, queryWords } from '../lib/highlight'
 import {
   deleteChunkedCache,
   deleteFolderTreeCache,
@@ -170,6 +171,14 @@ const searchIndex = new MiniSearch<SearchDoc>({
  *  anything a doc holds (`to` recipients, say, which aren't a stored field).
  *  Written and discarded in lockstep with `searchIndex`. */
 const searchDocs = new Map<string, SearchDoc>()
+
+/** Whether every quoted phrase appears intact somewhere in an indexed message.
+ *  The fields are joined with a NUL rather than whitespace so a phrase can't
+ *  match by running off the end of one field into the start of the next. */
+function containsPhrases(doc: SearchDoc, phraseRes: RegExp[]): boolean {
+  const hay = [doc.subject, doc.from, doc.to, doc.body, doc.attachments].join('\u0000')
+  return phraseRes.every((re) => re.test(hay))
+}
 
 /** Whether an indexed message satisfies the optional advanced filters. */
 function matchesSearchFilters(doc: SearchDoc, f: SearchFilters): boolean {
@@ -1635,6 +1644,11 @@ const api = {
 
   /** Fuzzy full-text search across all indexed sources.
    *
+   *  Text in double quotes is a phrase: it must appear intact in the message,
+   *  never merely as its words scattered about. The index only knows single
+   *  words, so it narrows to mail holding all of them and `containsPhrases`
+   *  then checks the doc text itself.
+   *
    *  With no query text but at least one active filter, browses by filter alone
    *  ("every mail in this folder with an attachment") — scanning the docs
    *  instead of the term index, newest first, since there's nothing to rank by.
@@ -1650,23 +1664,44 @@ const api = {
       hits.sort((a, b) => (b.date ?? 0) - (a.date ?? 0))
       return hits.slice(0, limit)
     }
-    // Terms with a digit (numbers, ids, reference codes) are specific, so match
-    // them exactly. Fuzzy matching on an id finds near-misses that are rarely
-    // wanted and, worse, do not contain the typed text so nothing highlights.
-    // Plain words stay fuzzy for typo tolerance.
-    const results = searchIndex.search(q, {
+    const { phrases, words } = parseQuery(q)
+    // Typed text that is all punctuation, or an empty pair of quotes, asks for
+    // nothing findable — don't let it fall through to the doc scan below and
+    // return the whole mailbox.
+    if (!phrases.length && !words.length) return []
+    const phraseRes = phrases.map(phraseRegExp)
+    const passes = (id: string): boolean => {
+      const doc = searchDocs.get(id)
+      if (!doc) return !phraseRes.length && !(filters && hasActiveFilters(filters))
+      if (phraseRes.length && !containsPhrases(doc, phraseRes)) return false
+      return !filters || !hasActiveFilters(filters) || matchesSearchFilters(doc, filters)
+    }
+    // Words spelled out inside quotes are meant literally, so no fuzziness and
+    // no prefix expansion for them. Terms with a digit (numbers, ids, reference
+    // codes) are specific too, so match them exactly. Fuzzy matching on an id
+    // finds near-misses that are rarely wanted and, worse, do not contain the
+    // typed text so nothing highlights. Plain words stay fuzzy for typo
+    // tolerance.
+    const exact = new Set(phrases.flatMap((p) => queryWords(p, 1)))
+    const indexQuery = [...phrases, ...words].join(' ')
+    // A query of nothing but punctuation in quotes (`"++"`) leaves the index
+    // with no term to look up; scan the docs so the phrase can still be found.
+    if (!exact.size && !words.length) {
+      const hits: SearchHit[] = []
+      for (const [id, doc] of searchDocs) {
+        if (passes(id)) hits.push(docToHit(doc, 0))
+      }
+      hits.sort((a, b) => (b.date ?? 0) - (a.date ?? 0))
+      return hits.slice(0, limit)
+    }
+    const results = searchIndex.search(indexQuery, {
       combineWith: 'AND',
-      fuzzy: (term) => (/\d/.test(term) ? false : 0.2),
+      fuzzy: (term) => (exact.has(term) || /\d/.test(term) ? false : 0.2),
+      prefix: (term) => !exact.has(term),
     })
     // Filter before slicing to the limit, so a narrow filter doesn't get starved
     // by unrelated matches that happened to score higher.
-    const matched =
-      filters && hasActiveFilters(filters)
-        ? results.filter((r) => {
-            const doc = searchDocs.get(r.id as string)
-            return doc != null && matchesSearchFilters(doc, filters)
-          })
-        : results
+    const matched = results.filter((r) => passes(r.id as string))
     return matched.slice(0, limit).map((r) => ({
       sourceId: r.sourceId as string,
       messageId: r.messageId as string,

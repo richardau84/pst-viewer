@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { termsRegExp } from '../lib/highlight'
+import { termsRegExp, type QueryTerm } from '../lib/highlight'
 
 /** Base styles injected into the email document for readability. */
 const BASE_CSS = `
@@ -33,7 +33,7 @@ function clearHighlights(doc: Document) {
 }
 
 /** Wrap matches of `terms` in <mark> across text nodes. Returns the match count. */
-function applyHighlights(doc: Document, terms: string[]): number {
+function applyHighlights(doc: Document, terms: QueryTerm[]): number {
   const re = termsRegExp(terms)
   if (!re || !doc.body) return 0
   const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
@@ -93,11 +93,11 @@ export function EmailFrame({
   onImageClick,
 }: {
   html: string
-  terms?: string[]
+  terms?: QueryTerm[]
   onImageClick?: (src: string) => void
 }) {
   const ref = useRef<HTMLIFrameElement>(null)
-  const termsKey = terms.join('')
+  const termsKey = terms.map((t) => t.text).join('')
 
   const scrolledForHtmlRef = useRef('')
   const onImageClickRef = useRef(onImageClick)
