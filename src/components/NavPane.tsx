@@ -283,8 +283,11 @@ function SourceTree({ source }: { source: Source }) {
         )}
       </div>
 
-      {source.status === 'parsing' && (
+      {source.status === 'parsing' && !source.index && (
         <p className="px-3 pb-1 text-[11px] text-slate-400">Reading folders…</p>
+      )}
+      {source.status === 'parsing' && source.index && (
+        <p className="px-3 pb-1 text-[11px] text-slate-400">Refreshing…</p>
       )}
       {source.status === 'error' && (
         <p
@@ -297,7 +300,7 @@ function SourceTree({ source }: { source: Source }) {
       {source.status === 'ready' && !source.indexed && source.indexProgress && (
         <p className="px-3 pb-1 text-[11px] text-slate-400">Indexing for search… {pct}%</p>
       )}
-      {source.status === 'ready' && source.index && (
+      {source.index && (
         <ul className="ml-5">
           {sortFolders(source.index.rootFolder.children).map((child) => (
             <FolderRow key={child.id} sourceId={source.id} node={child} depth={0} />

@@ -265,7 +265,7 @@ export const useApp = create<AppState>((set, get) => {
   const registerAndOpen = (
     id: string,
     seed: { fileName: string; size: number; label: string },
-    open: (id: string) => Promise<SourceIndex>,
+    open: (id: string, onCached: (index: SourceIndex) => void) => Promise<SourceIndex>,
     failMessage: string,
     persist?: { file: File; handle: FileSystemFileHandle },
   ): Promise<void> => {
@@ -277,7 +277,26 @@ export const useApp = create<AppState>((set, get) => {
     const source: Source = { id, ...seed, status: 'parsing' }
     set((s) => ({ sources: [...s.sources, source] }))
 
-    return open(id)
+    // Fires early with a cached folder tree (see `pst.openSource`), well
+    // before `open()` below resolves with the authoritative one — lets the
+    // folder pane render immediately instead of sitting blank through the
+    // real re-parse. Only applies while still parsing and nothing has
+    // landed yet, so it can never clobber the real result with stale data.
+    const onCached = (index: SourceIndex) => {
+      set((s) => ({
+        sources: s.sources.map((src) =>
+          src.id === id && src.status === 'parsing' && !src.index
+            ? {
+                ...src,
+                index,
+                label: dedupeLabel(index.suggestedLabel || src.label, seed.fileName, s.sources, id),
+              }
+            : src,
+        ),
+      }))
+    }
+
+    return open(id, onCached)
       .then((index) => {
         set((s) => ({
           sources: s.sources.map((src) =>
@@ -400,7 +419,7 @@ export const useApp = create<AppState>((set, get) => {
         await registerAndOpen(
           id,
           { fileName: file.name, size: file.size, label: record.label },
-          (openId) => pst.openSource(openId, file, true),
+          (openId, onCached) => pst.openSource(openId, file, true, Comlink.proxy(onCached)),
           PST_OPEN_FAIL_MESSAGE,
           { file, handle: record.handle },
         )
@@ -428,10 +447,13 @@ export const useApp = create<AppState>((set, get) => {
     if (handle) {
       void sourceKey(file)
         .then((id) =>
-          registerAndOpen(id, seed, (openId) => pst.openSource(openId, file, true), PST_OPEN_FAIL_MESSAGE, {
-            file,
-            handle,
-          }),
+          registerAndOpen(
+            id,
+            seed,
+            (openId, onCached) => pst.openSource(openId, file, true, Comlink.proxy(onCached)),
+            PST_OPEN_FAIL_MESSAGE,
+            { file, handle },
+          ),
         )
         .catch(() =>
           registerAndOpen(uid(), seed, (openId) => pst.openSource(openId, file, false), PST_OPEN_FAIL_MESSAGE),

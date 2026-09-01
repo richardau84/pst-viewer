@@ -3,7 +3,14 @@ import MiniSearch from 'minisearch'
 import { parseTnef, type TnefAttachment } from '../lib/tnef'
 import { extractSmime } from '../lib/smime'
 import { fingerprint } from '../lib/files'
-import { deleteChunkedCache, readChunkedCache, writeChunkedCache } from '../lib/idb'
+import {
+  deleteChunkedCache,
+  deleteFolderTreeCache,
+  readChunkedCache,
+  readFolderTreeCache,
+  writeChunkedCache,
+  writeFolderTreeCache,
+} from '../lib/idb'
 import {
   createMsgFolder,
   msgAppointmentCard,
@@ -76,6 +83,12 @@ interface SourceEntry {
    *  Gates every searchDocs cache read/write so a `.msg`/`.eml` batch or a
    *  zip-extracted synthetic file never gets an orphaned cache row. */
   persist: boolean
+  /** Resolves once `buildFolderTree` has finished populating `folders` for
+   *  every node in the tree. A cache-hit fast path can hand the UI a folder
+   *  tree (and this entry) before that walk completes, so anything reading
+   *  `folders` — currently just `getFolderMessages` — must await this first
+   *  to avoid racing the still-in-flight real parse. */
+  ready: Promise<void>
 }
 
 const sources = new Map<string, SourceEntry>()
@@ -86,11 +99,16 @@ const sources = new Map<string, SourceEntry>()
  *  the same id is opened again (a fresh session for that identity). */
 const forgottenIds = new Set<string>()
 
+/** Bump whenever the folder walk changes shape, so trees cached by an older
+ *  build are re-parsed instead of shown. Bumped to 2 for the OST mailbox-root
+ *  fix (see `findMailboxRoot`), whose caches hold a wrong, one-folder tree. */
+const TREE_VERSION = 2
+
 /** Bump whenever body extraction (stripHtml/extractBodies/RTF-de-encapsulation/
  *  TNEF/S-MIME) or the MiniSearch field config changes — a cached SearchDoc's
  *  shape is a function of that code, and a fingerprint match alone can't
  *  detect "the code that produced this cache changed." */
-const DOCS_VERSION = 1
+const DOCS_VERSION = 2
 
 // Best-effort: ask the browser not to evict this origin's storage under
 // pressure (relevant now that a mailbox's search index is cached durably).
@@ -253,6 +271,56 @@ async function buildFolderTree(folder: IPSTFolder, entry: SourceEntry): Promise<
   }
 }
 
+/** A folder EntryID (MS-OXCDATA 2.2.4.1) is 24 bytes: 4 flag bytes, the
+ *  16-byte store GUID, then the 4-byte node id, little-endian. */
+function nodeIdFromEntryId(value: unknown): number | null {
+  let bytes: Uint8Array | null = null
+  if (value instanceof ArrayBuffer) bytes = new Uint8Array(value)
+  else if (ArrayBuffer.isView(value)) {
+    bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+  }
+  if (!bytes || bytes.length < 24) return null
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(20, true)
+}
+
+/**
+ * Find the mailbox root — the IPM subtree Outlook shows as the top of the
+ * data file, holding Inbox/Sent Items/Calendar/… .
+ *
+ * It has no fixed node id. MS-PST points at it with PidTagIpmSubTreeEntryId
+ * (0x35E0) on the message store, which is what we read here. pst-extractor's
+ * `getTopOfOutlookDataFile()` instead hardcodes node id 0x8022 — where Outlook
+ * happens to allocate the subtree in a `.pst`, but NOT in a `.ost`, where that
+ * id lands on some arbitrary folder (in practice Calendar). Trusting it there
+ * opened an OST showing only that one folder's subtree, hiding all the mail.
+ *
+ * Returns null when neither route yields a plausible root; the caller then
+ * falls back to walking the true root folder.
+ */
+async function findMailboxRoot(pstFile: IPSTFile): Promise<IPSTFolder | null> {
+  const root = await safeAsync(() => pstFile.getRootFolder(), null)
+  if (!root) return null
+  const children = await safeAsync(() => root.getSubFolders(), [] as IPSTFolder[])
+  const nodeIdOf = (f: IPSTFolder) => safe(() => f.primaryNodeId, -1)
+
+  const wanted = await safeAsync(async () => {
+    const store = await pstFile.getMessageStore()
+    return nodeIdFromEntryId(safe(() => store.getProperty(0x35e0)?.value, undefined))
+  }, null)
+  if (wanted !== null) {
+    const hit = children.find((c) => nodeIdOf(c) === wanted)
+    if (hit) return hit
+  }
+
+  // No usable entry id: fall back to the library's hardcoded lookup, but only
+  // when what it returns really is a direct child of the root folder — the
+  // one thing the IPM subtree always is, and the wrong-folder case never is.
+  const top = await safeAsync(() => pstFile.getTopOfOutlookDataFile(), null)
+  if (top && children.some((c) => nodeIdOf(c) === nodeIdOf(top))) return top
+
+  return null
+}
+
 // Outlook shows folders directly under the mailbox, not under the internal
 // "Top of Personal Folders" container; lift that container's children up a level.
 function liftRootContainer(node: FolderNode): FolderNode {
@@ -314,10 +382,12 @@ function isGenericStoreName(name: string): boolean {
   const n = (name || '').trim().toLowerCase()
   return (
     n === '' ||
-    /^(top of )?(personal folders|outlook data file)\b/.test(n) ||
+    /^(top of )?(personal folders|outlook data file|information store)\b/.test(n) ||
+    n === 'ipm_subtree' ||
     n === 'mailbox' ||
     n === 'root' ||
-    n === 'root - mailbox'
+    n === 'root - mailbox' ||
+    n === '(unnamed folder)'
   )
 }
 
@@ -1009,12 +1079,41 @@ const api = {
   /** Open a PST/OST File, walk its folder tree, and return a serializable
    *  index. `persist` is true only when this is a real single PST/OST opened
    *  via a path that yielded a FileSystemFileHandle (see `src/lib/files.ts`'s
-   *  `sourceKey`/`isPersistableName`) — it gates the searchDocs cache. */
-  async openSource(sourceId: string, file: File, persist: boolean): Promise<SourceIndex> {
+   *  `sourceKey`/`isPersistableName`) — it gates the searchDocs cache and the
+   *  folderTree cache alike.
+   *
+   *  On a persistable source, a fingerprint-matching folder tree cached by a
+   *  prior session (see the `folderTree` store in `src/lib/idb.ts`) is handed
+   *  to `onCachedIndex` as soon as it's read, well before the real walk below
+   *  finishes — the caller can render it immediately instead of showing a
+   *  blank folder pane. This never skips the real walk: the live folder
+   *  handles it populates on `entry.folders` are still required for every
+   *  other call, so the resolved return value is always the fresh result,
+   *  and a miss (first-ever open, or a cache written before this feature
+   *  existed) just means no early callback. */
+  async openSource(
+    sourceId: string,
+    file: File,
+    persist: boolean,
+    onCachedIndex?: (index: SourceIndex) => void,
+  ): Promise<SourceIndex> {
     await evictSource(sourceId)
     forgottenIds.delete(sourceId)
 
+    const fp = fingerprint(file)
+    if (persist) {
+      void readFolderTreeCache<SourceIndex>(sourceId, fp, TREE_VERSION)
+        .then((cached) => {
+          if (cached) onCachedIndex?.(cached)
+        })
+        .catch(() => {})
+    }
+
     const pstFile = await openPst(makeReader(file))
+    let markReady!: () => void
+    const readyPromise = new Promise<void>((resolve) => {
+      markReady = resolve
+    })
     const entry: SourceEntry = {
       file: pstFile,
       folders: new Map(),
@@ -1022,8 +1121,9 @@ const api = {
       attachments: new Map(),
       searchIds: new Set(),
       tnef: new Map(),
-      fingerprint: fingerprint(file),
+      fingerprint: fp,
       persist,
+      ready: readyPromise,
     }
     sources.set(sourceId, entry)
 
@@ -1031,15 +1131,11 @@ const api = {
     // mailbox root. Internal containers like Search Root are siblings of it under
     // the true root, so starting here drops them in any language. Fall back to the
     // raw root (lifting the localized top container) only if the subtree is absent.
-    let top: IPSTFolder | null = null
-    try {
-      top = await pstFile.getTopOfOutlookDataFile()
-    } catch {
-      top = null
-    }
+    const top = await findMailboxRoot(pstFile)
     const rootNode = top
       ? await buildFolderTree(top, entry)
       : liftRootContainer(await buildFolderTree(await pstFile.getRootFolder(), entry))
+    markReady()
 
     let totalMessages = 0
     const sum = (n: FolderNode) => {
@@ -1055,17 +1151,22 @@ const api = {
       async () => (await pstFile.getMessageStore()).displayName,
       '',
     )
-    const topName = await safeAsync(
-      async () => (await pstFile.getTopOfOutlookDataFile()).displayName,
-      '',
-    )
+    // Name of the root we actually walked — never getTopOfOutlookDataFile()'s,
+    // which on an OST is an unrelated folder (see `findMailboxRoot`).
+    const topName = rootNode.name
     const ownerName = [storeName, topName].find((n) => n && !isGenericStoreName(n)) ?? ''
 
-    return {
+    const result: SourceIndex = {
       rootFolder: rootNode,
       totalMessages,
       suggestedLabel: ownerName || prettyFileName(file.name),
     }
+
+    if (persist) {
+      void safeAsync(() => writeFolderTreeCache(sourceId, fp, TREE_VERSION, result), undefined)
+    }
+
+    return result
   },
 
   /**
@@ -1107,6 +1208,8 @@ const api = {
       // key a searchDocs cache row by, so the fingerprint is never consulted.
       fingerprint: { size: 0, lastModified: 0 },
       persist: false,
+      // Folders are built synchronously below, not via `buildFolderTree`.
+      ready: Promise.resolve(),
     }
 
     // Standalone files carry no folder tree, so bucket items into Outlook-like
@@ -1164,6 +1267,7 @@ const api = {
   async getFolderMessages(sourceId: string, folderId: string): Promise<FolderMessages> {
     const entry = sources.get(sourceId)
     if (!entry) return { messages: [], unreadable: 0 }
+    await entry.ready
     const folder = entry.folders.get(folderId)
     if (!folder) return { messages: [], unreadable: 0 }
 
@@ -1426,7 +1530,10 @@ const api = {
    *  right after this deletes it. */
   async forgetPersisted(sourceId: string): Promise<void> {
     forgottenIds.add(sourceId)
-    await safeAsync(() => deleteChunkedCache(sourceId), undefined)
+    await Promise.all([
+      safeAsync(() => deleteChunkedCache(sourceId), undefined),
+      safeAsync(() => deleteFolderTreeCache(sourceId), undefined),
+    ])
   },
 }
 
