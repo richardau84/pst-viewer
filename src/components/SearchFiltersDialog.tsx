@@ -9,6 +9,8 @@ const FOLDER_SEP = '::'
 const inputCls =
   'rounded-md border border-slate-700 bg-slate-800/60 px-2.5 py-1.5 text-sm text-slate-100 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none'
 
+const errorInputCls = 'border-rose-500 focus:border-rose-500'
+
 function toDateInputValue(ms: number): string {
   const d = new Date(ms)
   const y = d.getFullYear()
@@ -67,7 +69,11 @@ export function SearchFiltersDialog({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // A reversed range can never match anything, so block Apply until it's fixed.
+  const invalidRange = dateFrom !== '' && dateTo !== '' && dateTo < dateFrom
+
   const apply = () => {
+    if (invalidRange) return
     const sepIdx = folderValue.indexOf(FOLDER_SEP)
     const folder =
       sepIdx === -1
@@ -119,17 +125,26 @@ export function SearchFiltersDialog({ onClose }: { onClose: () => void }) {
               <input
                 type="date"
                 value={dateFrom}
+                max={dateTo || undefined}
                 onChange={(e) => setDateFrom(e.target.value)}
-                className={`${inputCls} flex-1`}
+                aria-invalid={invalidRange}
+                className={`${inputCls} flex-1 ${invalidRange ? errorInputCls : ''}`}
               />
               <span className="text-xs text-slate-500">to</span>
               <input
                 type="date"
                 value={dateTo}
+                min={dateFrom || undefined}
                 onChange={(e) => setDateTo(e.target.value)}
-                className={`${inputCls} flex-1`}
+                aria-invalid={invalidRange}
+                className={`${inputCls} flex-1 ${invalidRange ? errorInputCls : ''}`}
               />
             </div>
+            {invalidRange && (
+              <p role="alert" className="mt-1 text-xs text-rose-400">
+                End date must be on or after the start date.
+              </p>
+            )}
           </div>
 
           <div>
@@ -198,7 +213,9 @@ export function SearchFiltersDialog({ onClose }: { onClose: () => void }) {
             </button>
             <button
               onClick={apply}
-              className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-sky-500"
+              disabled={invalidRange}
+              data-tip={invalidRange ? 'End date must be on or after the start date' : undefined}
+              className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
             >
               Apply
             </button>
