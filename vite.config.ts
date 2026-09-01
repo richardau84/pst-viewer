@@ -9,12 +9,12 @@ declare const process: { env: Record<string, string | undefined> }
 // serializes into the generated SW; declared so this Node-context file type-checks.
 declare const self: { location: { origin: string } }
 
-// Default '/' (root domains, Caddy, Nginx, Netlify, etc.). GitHub Pages project
-// sites are served from a subpath, so the CI build sets BASE_PATH=/pst-viewer/.
-const base = process.env.BASE_PATH || '/'
-
+// Relative base: every asset/script/icon reference in the built output is
+// written as './...' instead of '/...', so the same dist/ folder works
+// unmodified whether it's served from a domain root or an arbitrary subfolder
+// (e.g. https://host/some/subpath/) — no BASE_PATH/rebuild needed per target.
 export default defineConfig({
-  base,
+  base: './',
   resolve: {
     alias: {
       // msgreader pulls in iconv-lite, which needs Node's Buffer; swap in a

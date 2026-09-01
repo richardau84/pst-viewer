@@ -20,18 +20,12 @@ npm run build      # outputs static files to dist/
 
 Upload the **contents of `dist/`** to any static host. That's the whole app.
 
-### The one gotcha: base path
-
-- **Root of a domain** (e.g. `https://mail.example.com/`) - use the normal
-  `npm run build`. This is the default and works for Caddy, Nginx, Netlify,
-  Vercel, Cloudflare, S3, and GitHub Pages **with a custom domain**.
-- **A sub-path** (e.g. GitHub Pages project sites at
-  `https://user.github.io/pst-viewer/`) - build with the path set:
-  ```bash
-  BASE_PATH=/pst-viewer/ npm run build      # macOS/Linux
-  # Windows PowerShell:  $env:BASE_PATH='/pst-viewer/'; npm run build
-  ```
-  The included GitHub Actions workflow does this for you automatically.
+Every reference inside the build (scripts, styles, icons, the manifest, the
+service worker) is written as a **relative** path, so the exact same `dist/`
+folder works unmodified whether it's served from a domain root
+(`https://mail.example.com/`) or an arbitrary subfolder
+(`https://mail.example.com/some/subpath/`) — no build-time configuration
+needed either way.
 
 ---
 
@@ -45,8 +39,8 @@ Pages on every push to `main`.
 3. Push to `main` (or run the "Deploy to GitHub Pages" workflow manually).
 4. Your site appears at `https://<your-user>.github.io/pst-viewer/`.
 
-**Custom domain:** add it under Settings -> Pages. If it serves from the domain
-root, edit the workflow's `BASE_PATH` to `/` (and add a `CNAME`).
+**Custom domain:** add it under Settings -> Pages (and a `CNAME`) — no other
+change needed, since the build works the same at a domain root or a subpath.
 
 ---
 
@@ -172,9 +166,9 @@ Connect the repo (or drag-and-drop the `dist/` folder for a manual deploy):
 | Build command    | `npm run build` |
 | Publish / output | `dist`          |
 
-These serve from the domain root, so no `BASE_PATH` is needed. They provide HTTPS
-automatically. (Optional SPA fallback: a `_redirects` file with `/* /index.html 200`
-for Netlify; the others detect Vite automatically.)
+They provide HTTPS automatically, and work the same whether the site is
+mapped to the domain root or a subpath. (Optional SPA fallback: a `_redirects`
+file with `/* /index.html 200` for Netlify; the others detect Vite automatically.)
 
 ---
 

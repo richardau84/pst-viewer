@@ -25,12 +25,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Build (GitHub Pages subpath)
+      - name: Build
         run: npm run build
-        env:
-          # Project site is served from https://<user>.github.io/pst-viewer/
-          # Change this if you rename the repo or use a custom domain (then '/').
-          BASE_PATH: /pst-viewer/
       - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
