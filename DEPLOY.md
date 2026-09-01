@@ -103,6 +103,13 @@ a secure context, so everything including the installable/offline PWA works
 locally. To serve other machines, put it behind an HTTPS reverse proxy (Caddy,
 Traefik, Nginx); PWA features require HTTPS on non-localhost origins.
 
+Reconnecting a mailbox after a refresh (see [Privacy](README.md#privacy)) is
+built on the File System Access API and `crypto.subtle`, both of which browsers
+only expose in a secure context. Serving this over plain HTTP on any origin
+other than `localhost` — the plain-HTTP option above included, once put behind
+a non-HTTPS proxy for a real domain — simply means that feature doesn't appear;
+the app itself is unaffected and needs no configuration either way.
+
 **Building it yourself** gives an identical result: `docker build -t pst-viewer .`
 in the repo root. Forks publish their own image at
 `ghcr.io/<your-user>/pst-viewer`; if the package comes out private, set it to

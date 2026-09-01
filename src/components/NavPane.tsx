@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react'
 import { useApp, type Source } from '../store/store'
 import type { FolderNode } from '../types'
-import { ACCEPT_ATTR, filterAccepted } from '../lib/files'
+import { ACCEPT_ATTR, FSA_SUPPORTED, PICKER_TYPES, filterAccepted, isPersistableName } from '../lib/files'
+import { RememberedList } from './RememberedList'
 import {
   Alert,
   Archive,
@@ -123,6 +124,9 @@ export function NavPane() {
           sources.map((source) => <SourceTree key={source.id} source={source} />)}
       </div>
 
+      <div className="shrink-0 px-1.5 pb-1.5">
+        <RememberedList />
+      </div>
       <NavAddFiles />
     </nav>
   )
@@ -131,10 +135,35 @@ export function NavPane() {
 function NavAddFiles() {
   const addFiles = useApp((s) => s.addFiles)
   const input = useRef<HTMLInputElement>(null)
+
+  const onBrowse = async () => {
+    if (FSA_SUPPORTED) {
+      try {
+        const picked = await window.showOpenFilePicker({
+          types: PICKER_TYPES,
+          multiple: true,
+          excludeAcceptAllOption: true,
+        })
+        const files: File[] = []
+        const handles: (FileSystemFileHandle | undefined)[] = []
+        for (const handle of picked) {
+          const file = await handle.getFile()
+          files.push(file)
+          handles.push(isPersistableName(file.name) ? handle : undefined)
+        }
+        if (files.length) addFiles(files, handles)
+        return
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return
+      }
+    }
+    input.current?.click()
+  }
+
   return (
     <div className="shrink-0 border-t border-slate-800 p-2">
       <button
-        onClick={() => input.current?.click()}
+        onClick={() => void onBrowse()}
         className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-sm font-medium text-slate-200 transition hover:bg-slate-700/60"
       >
         <Plus className="h-4 w-4" />

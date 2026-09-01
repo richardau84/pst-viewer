@@ -2,6 +2,8 @@ import * as Comlink from 'comlink'
 import MiniSearch from 'minisearch'
 import { parseTnef, type TnefAttachment } from '../lib/tnef'
 import { extractSmime } from '../lib/smime'
+import { fingerprint } from '../lib/files'
+import { deleteChunkedCache, readChunkedCache, writeChunkedCache } from '../lib/idb'
 import {
   createMsgFolder,
   msgAppointmentCard,
@@ -67,9 +69,55 @@ interface SourceEntry {
   tnef: Map<string, TnefAttachment[]>
   /** For .msg sources: files that failed to parse, counted per folder. */
   extraUnreadable?: Map<string, number>
+  /** `{ size, lastModified }` off the opened File, set once in `openSource`;
+   *  a mismatch on reconnect means the file changed and the cache is stale. */
+  fingerprint: { size: number; lastModified: number }
+  /** True only for a real single PST/OST opened with a FileSystemFileHandle.
+   *  Gates every searchDocs cache read/write so a `.msg`/`.eml` batch or a
+   *  zip-extracted synthetic file never gets an orphaned cache row. */
+  persist: boolean
 }
 
 const sources = new Map<string, SourceEntry>()
+
+/** Ids synchronously marked as "being forgotten" by `forgetPersisted`, closing
+ *  the window where "Remove mailbox" deletes the searchDocs cache and an
+ *  in-flight `indexSource` write immediately recreates it. Cleared whenever
+ *  the same id is opened again (a fresh session for that identity). */
+const forgottenIds = new Set<string>()
+
+/** Bump whenever body extraction (stripHtml/extractBodies/RTF-de-encapsulation/
+ *  TNEF/S-MIME) or the MiniSearch field config changes — a cached SearchDoc's
+ *  shape is a function of that code, and a fingerprint match alone can't
+ *  detect "the code that produced this cache changed." */
+const DOCS_VERSION = 1
+
+// Best-effort: ask the browser not to evict this origin's storage under
+// pressure (relevant now that a mailbox's search index is cached durably).
+// Never block startup on it, and ignore whatever it resolves to.
+if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
+  void navigator.storage.persist().catch(() => {})
+}
+
+/** In-memory teardown only — no IndexedDB deletion. Shared by `closeSource`
+ *  and by `openSource`/`openMsgSource` reopening an id that's already live
+ *  (double reconnect, reconnect-then-redrop): with identity-derived ids a
+ *  bare `sources.delete()` would leave the old entry's docs in the *shared*
+ *  MiniSearch index — orphaned and unremovable, and liable to make a later
+ *  `searchIndex.addAll` throw on a duplicate id (MiniSearch rejects those,
+ *  and `addAll` isn't transactional, so a throw mid-call half-loads the index). */
+async function evictSource(sourceId: string): Promise<void> {
+  const entry = sources.get(sourceId)
+  if (!entry) return
+  // Remove from the registry first (synchronously) so in-flight indexing
+  // sees the source as gone and stops adding to the shared index.
+  sources.delete(sourceId)
+  for (const id of entry.searchIds) {
+    if (searchIndex.has(id)) searchIndex.discard(id)
+    searchDocs.delete(id)
+  }
+  await safeAsync(() => entry.file.close(), undefined)
+}
 
 interface SearchDoc {
   id: string
@@ -958,9 +1006,13 @@ const api = {
     return 'pong'
   },
 
-  /** Open a PST/OST File, walk its folder tree, and return a serializable index. */
-  async openSource(sourceId: string, file: File): Promise<SourceIndex> {
-    sources.delete(sourceId)
+  /** Open a PST/OST File, walk its folder tree, and return a serializable
+   *  index. `persist` is true only when this is a real single PST/OST opened
+   *  via a path that yielded a FileSystemFileHandle (see `src/lib/files.ts`'s
+   *  `sourceKey`/`isPersistableName`) — it gates the searchDocs cache. */
+  async openSource(sourceId: string, file: File, persist: boolean): Promise<SourceIndex> {
+    await evictSource(sourceId)
+    forgottenIds.delete(sourceId)
 
     const pstFile = await openPst(makeReader(file))
     const entry: SourceEntry = {
@@ -970,6 +1022,8 @@ const api = {
       attachments: new Map(),
       searchIds: new Set(),
       tnef: new Map(),
+      fingerprint: fingerprint(file),
+      persist,
     }
     sources.set(sourceId, entry)
 
@@ -1021,7 +1075,8 @@ const api = {
    * the folder's unreadable count; throws only when nothing could be read.
    */
   async openMsgSource(sourceId: string, files: File[]): Promise<SourceIndex> {
-    sources.delete(sourceId)
+    await evictSource(sourceId)
+    forgottenIds.delete(sourceId)
 
     const messages: IPSTMessage[] = []
     let failed = 0
@@ -1048,6 +1103,10 @@ const api = {
       attachments: new Map(),
       searchIds: new Set(),
       tnef: new Map(),
+      // .msg/.eml batches never persist: no single stable file identity to
+      // key a searchDocs cache row by, so the fingerprint is never consulted.
+      fingerprint: { size: 0, lastModified: 0 },
+      persist: false,
     }
 
     // Standalone files carry no folder tree, so bucket items into Outlook-like
@@ -1230,6 +1289,16 @@ const api = {
    * Build the full-text search index for a source in the background.
    * Walks every folder, indexing subject/from/to/body/attachment-names, and
    * warms the message + attachment caches as a side effect.
+   *
+   * For a persistable source, first tries a cached index written by a prior
+   * session (see the `searchDocs` store in `src/lib/idb.ts`). On a hit this
+   * skips the expensive part (body extraction via `buildSearchDoc`), but
+   * still walks every folder's `getEmails()` — enumeration only — because
+   * that's the *only* code that populates `entry.messages`, and
+   * `getMessageContent` is a pure `entry.messages.get(id)` lookup. Skipping
+   * it on a cache hit would leave any message in a folder the user never
+   * manually opened unreadable: `openHit` (clicking a search result) calls
+   * `getMessageContent` directly, without going through `getFolderMessages`.
    */
   async indexSource(
     sourceId: string,
@@ -1242,6 +1311,34 @@ const api = {
     for (const folder of entry.folders.values()) total += safe(() => folder.contentCount, 0)
     let done = 0
 
+    if (entry.persist) {
+      const cached = await safeAsync(
+        () => readChunkedCache<SearchDoc>(sourceId, entry.fingerprint, DOCS_VERSION),
+        null,
+      )
+      if (cached) {
+        for (const folder of entry.folders.values()) {
+          if (!sources.has(sourceId)) return // source removed mid-restore
+          const emails = await safeAsync(() => folder.getEmails(), [])
+          for (const m of emails) entry.messages.set(String(m.primaryNodeId), m)
+        }
+        if (!sources.has(sourceId)) return
+        // Defensive de-dupe even after the evict-before-reopen fix above:
+        // MiniSearch rejects re-adding an id already present.
+        const fresh = cached.filter((d) => !searchIndex.has(d.id))
+        if (fresh.length) searchIndex.addAll(fresh)
+        for (const d of cached) {
+          searchDocs.set(d.id, d)
+          entry.searchIds.add(d.id)
+        }
+        onProgress?.(total, total)
+        return
+      }
+    }
+
+    // Miss (no cache, not persistable, or a fingerprint/version mismatch):
+    // run the full walk unchanged, accumulating every doc for the cache write.
+    const allDocs: SearchDoc[] = []
     for (const [folderId, folder] of entry.folders) {
       if (!sources.has(sourceId)) return // source removed mid-index
       const emails = await safeAsync(() => folder.getEmails(), [])
@@ -1268,9 +1365,24 @@ const api = {
         return
       }
       if (docs.length) searchIndex.addAll(docs)
+      allDocs.push(...docs)
       onProgress?.(done, total)
     }
     onProgress?.(done, total)
+
+    if (entry.persist) {
+      // Re-check right before the write, not just at the top of this method:
+      // "Remove mailbox" (forgetPersisted) may have evicted this source and
+      // marked it forgotten while the walk above was running. Skipping the
+      // write here is what keeps a fast in-flight index from resurrecting a
+      // cache the user just asked to delete.
+      if (sources.has(sourceId) && !forgottenIds.has(sourceId)) {
+        await safeAsync(
+          () => writeChunkedCache(sourceId, allDocs, entry.fingerprint, DOCS_VERSION),
+          undefined,
+        )
+      }
+    }
   },
 
   /** Fuzzy full-text search across all indexed sources. */
@@ -1300,18 +1412,21 @@ const api = {
     }))
   },
 
-  /** Release a source, its PST handle, and its search-index entries. */
+  /** Release a source, its PST handle, and its search-index entries. Never
+   *  touches the on-disk searchDocs cache — closing a mailbox (e.g. tab
+   *  close) must not imply deleting it; only explicit removal does. */
   async closeSource(sourceId: string): Promise<void> {
-    const entry = sources.get(sourceId)
-    if (!entry) return
-    // Remove from the registry first (synchronously) so in-flight indexing
-    // sees the source as gone and stops adding to the shared index.
-    sources.delete(sourceId)
-    for (const id of entry.searchIds) {
-      if (searchIndex.has(id)) searchIndex.discard(id)
-      searchDocs.delete(id)
-    }
-    await safeAsync(() => entry.file.close(), undefined)
+    await evictSource(sourceId)
+  },
+
+  /** Explicit "forget": deletes the persisted searchDocs cache for a source
+   *  ("Remove mailbox" / "Forget" in the UI), distinct from `closeSource`.
+   *  Synchronously marks the id forgotten before anything async, so a
+   *  write already in flight from `indexSource` can't recreate the cache
+   *  right after this deletes it. */
+  async forgetPersisted(sourceId: string): Promise<void> {
+    forgottenIds.add(sourceId)
+    await safeAsync(() => deleteChunkedCache(sourceId), undefined)
   },
 }
 

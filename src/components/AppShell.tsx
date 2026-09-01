@@ -7,7 +7,7 @@ import { ReaderPane } from './ReaderPane'
 import { SearchBar } from './SearchBar'
 import { SearchResults } from './SearchResults'
 import { Resizer } from './Resizer'
-import { dragHasFiles, filterAccepted } from '../lib/files'
+import { FSA_SUPPORTED, dragHasFiles, filterAccepted, isAcceptedFile, isPersistableName } from '../lib/files'
 import { Printer, Spinner } from './icons'
 
 export function AppShell() {
@@ -39,8 +39,40 @@ export function AppShell() {
       e.preventDefault()
       depth = 0
       setDragging(false)
-      if (e.dataTransfer?.files?.length) {
-        const accepted = filterAccepted(e.dataTransfer.files)
+      const dt = e.dataTransfer
+      if (!dt) return
+
+      // Try to capture a re-grantable handle per dropped item (Chromium
+      // only), so a dropped PST/OST can be silently reconnected after a
+      // refresh just like one opened via the file picker. Anything that
+      // fails, or isn't supported, falls back to the plain File below.
+      if (FSA_SUPPORTED && dt.items?.length) {
+        void (async () => {
+          const files: File[] = []
+          const handles: (FileSystemFileHandle | undefined)[] = []
+          for (const item of Array.from(dt.items)) {
+            if (item.kind !== 'file') continue
+            let handle: FileSystemFileHandle | null = null
+            if ('getAsFileSystemHandle' in item) {
+              try {
+                const h = await item.getAsFileSystemHandle()
+                if (h && h.kind === 'file') handle = h as FileSystemFileHandle
+              } catch {
+                handle = null
+              }
+            }
+            const file = handle ? await handle.getFile() : item.getAsFile()
+            if (!file || !isAcceptedFile(file.name)) continue
+            files.push(file)
+            handles.push(handle && isPersistableName(file.name) ? handle : undefined)
+          }
+          if (files.length) addFiles(files, handles)
+        })()
+        return
+      }
+
+      if (dt.files?.length) {
+        const accepted = filterAccepted(dt.files)
         if (accepted.length) addFiles(accepted)
       }
     }

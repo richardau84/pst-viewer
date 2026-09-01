@@ -4,6 +4,15 @@ import { pst } from '../worker/client'
 import { scanZipForPsts } from '../lib/zip'
 import { buildPrintDocument, printHtmlDocument } from '../lib/printExport'
 import { buildEml, downloadBlob, emlFilename, type EmlAttachment } from '../lib/emlExport'
+import { fingerprint, sourceKey } from '../lib/files'
+import {
+  clearAllStores,
+  deleteHandleRecord,
+  getAllHandleRecords,
+  putHandleRecord,
+  updateHandleRecord,
+  type PersistedHandleRecord,
+} from '../lib/idb'
 import type {
   FolderNode,
   MessageContent,
@@ -41,6 +50,11 @@ export interface Source {
   indexed?: boolean
 }
 
+/** State of one remembered mailbox's reconnect attempt. `'idle'` means no
+ *  attempt is in flight (either never tried this session, or it already
+ *  finished and the mailbox is open). */
+export type ReconnectState = 'idle' | 'checking' | 'needs-permission' | 'opening' | 'error'
+
 interface Selection {
   sourceId: string | null
   folderId: string | null
@@ -72,12 +86,19 @@ interface AppState {
   exportSel: Record<string, { sourceId: string; messageId: string }>
   exporting: boolean
 
+  /** Persistable mailboxes remembered from a previous session (Chromium
+   *  File System Access only; always empty elsewhere). Newest-opened first. */
+  remembered: PersistedHandleRecord[]
+  reconnecting: Record<string, ReconnectState>
+  /** e.g. "File not found — it may have moved or been deleted." keyed by id. */
+  reconnectError: Record<string, string>
+
   /** Persisted panel widths (px). */
   navWidth: number
   listWidth: number
   setNavWidth: (w: number) => void
   setListWidth: (w: number) => void
-  addFiles: (files: File[]) => void
+  addFiles: (files: File[], handles?: (FileSystemFileHandle | undefined)[]) => void
   removeSource: (id: string) => void
   clearSources: () => void
   renameSource: (id: string, label: string) => void
@@ -98,6 +119,22 @@ interface AppState {
   exportSelected: (direction?: 'asc' | 'desc') => void
   exportSingle: (sourceId: string, messageId: string) => void
   exportEml: (sourceId: string, messageId: string) => void
+
+  /** Read every remembered `handles` row. Called once at boot; also re-run
+   *  after writing/renaming/forgetting a row to keep the list in sync. */
+  loadRemembered: () => Promise<void>
+  /** Silent path: `queryPermission` only, never prompts. Used both for the
+   *  boot-time restore-set walk and safe to call speculatively otherwise. */
+  reconnect: (id: string) => Promise<void>
+  /** Click-only path: the click *is* the user gesture, so this calls
+   *  `requestPermission` (which needs one) directly. */
+  grantAndReconnect: (id: string) => Promise<void>
+  /** Removes the remembered row and its cached search index, without
+   *  touching a currently-open session for that id, if any. */
+  forgetRemembered: (id: string) => void
+  /** Wipes every row in both IndexedDB stores unconditionally — an always-
+   *  available "erase everything this app has cached" escape hatch. */
+  clearAllPersisted: () => void
 }
 
 let counter = 0
@@ -105,6 +142,15 @@ const uid = () => `s${++counter}-${Date.now().toString(36)}`
 const stripExt = (n: string) => n.replace(/\.[^.]+$/, '')
 const fkey = (sourceId: string, folderId: string) => `${sourceId}:${folderId}`
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n))
+
+/** Most remembered mailboxes anyone will realistically want back; evicting
+ *  beyond this also deletes the evicted mailbox's cached search index. */
+const HANDLES_CAP = 20
+
+const PST_OPEN_FAIL_MESSAGE =
+  'This file could not be opened as a mailbox. It may be corrupt, incomplete, ' +
+  'or not a PST/OST. If you know it is a mailbox, repair it first with Microsoft’s ' +
+  'Inbox Repair Tool (scanpst.exe) and open the repaired copy.'
 
 const NAV_W_KEY = 'pstviewer.navWidth'
 const LIST_W_KEY = 'pstviewer.listWidth'
@@ -123,6 +169,15 @@ function writeNum(key: string, n: number) {
   } catch {
     /* ignore */
   }
+}
+
+/** A shallow copy of `obj` without `key`, or `obj` itself when `key` is
+ *  already absent (avoids a pointless state-object churn). */
+function omitKey<T>(obj: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in obj)) return obj
+  const next = { ...obj }
+  delete next[key]
+  return next
 }
 
 function compareBy(a: MessageMeta, b: MessageMeta, field: SortField): number {
@@ -181,7 +236,7 @@ function dedupeLabel(label: string, fileName: string, sources: Source[], selfId:
 }
 
 /** The "no mailboxes loaded" state: resets all per-session state (but not
- *  persisted panel widths or worker status). */
+ *  persisted panel widths, remembered mailboxes, or worker status). */
 function freshState(): Partial<AppState> {
   return {
     sources: [],
@@ -202,17 +257,27 @@ function freshState(): Partial<AppState> {
 }
 
 export const useApp = create<AppState>((set, get) => {
-  /** Register a source and run the shared open → index flow. */
-  const openSource = (
+  /** Register a source and run the shared open -> index flow. This is the
+   *  single real entry point for turning an id into a live `Source`, reached
+   *  from a fresh drop, a boot-time silent restore, and a manual Reconnect
+   *  click alike — so the duplicate-open guard below has to live here, not
+   *  in any one caller, to actually bound all three at once. */
+  const registerAndOpen = (
+    id: string,
     seed: { fileName: string; size: number; label: string },
     open: (id: string) => Promise<SourceIndex>,
     failMessage: string,
-  ) => {
-    const id = uid()
+    persist?: { file: File; handle: FileSystemFileHandle },
+  ): Promise<void> => {
+    // Ids are stable (identity-derived) once persistable, so the same id is
+    // reachable from two entry points at once (boot auto-reconnect racing a
+    // manual re-drop/click) — without this guard that mints two `Source`s.
+    if (get().sources.some((src) => src.id === id)) return Promise.resolve()
+
     const source: Source = { id, ...seed, status: 'parsing' }
     set((s) => ({ sources: [...s.sources, source] }))
 
-    open(id)
+    return open(id)
       .then((index) => {
         set((s) => ({
           sources: s.sources.map((src) =>
@@ -233,7 +298,29 @@ export const useApp = create<AppState>((set, get) => {
           if (target) get().selectFolder(id, target)
         }
 
-        // Background full-text indexing with progress.
+        if (persist) {
+          const now = Date.now()
+          const existing = get().remembered.find((r) => r.id === id)
+          const label = get().sources.find((s) => s.id === id)?.label ?? seed.label
+          void putHandleRecord({
+            id,
+            fileName: persist.file.name,
+            ...fingerprint(persist.file),
+            label,
+            addedAt: existing?.addedAt ?? now,
+            lastOpenedAt: now,
+            handle: persist.handle,
+          })
+            .then(() => get().loadRemembered())
+            .then(() => enforceHandleCap())
+            .catch(() => {
+              /* best-effort: the mailbox is fully usable this session either way */
+            })
+        }
+
+        // Background full-text indexing with progress. Deliberately not
+        // awaited: callers only need to wait for the folder tree, not for
+        // indexing (which can run concurrently once initiated).
         void pst
           .indexSource(
             id,
@@ -261,19 +348,106 @@ export const useApp = create<AppState>((set, get) => {
       })
   }
 
-  /** Open one PST/OST File: register a source, parse it, then index it. */
-  const startSource = (file: File) =>
-    openSource(
-      { fileName: file.name, size: file.size, label: stripExt(file.name) },
-      (id) => pst.openSource(id, file),
-      // The parser fails hard when a file's core structures are damaged. Give
-      // the user something actionable rather than a low-level reader message.
-      'This file could not be opened as a mailbox. It may be corrupt, incomplete, ' +
-        'or not a PST/OST. If you know it is a mailbox, repair it first with Microsoft’s ' +
-        'Inbox Repair Tool (scanpst.exe) and open the repaired copy.',
-    )
+  /** Deletes a remembered row's handle + cached search index, and drops any
+   *  in-flight reconnect state for it. Does not touch a currently-open
+   *  in-memory session for that id (closing and forgetting are separate). */
+  const forgetRememberedImpl = async (id: string): Promise<void> => {
+    set((s) => ({
+      remembered: s.remembered.filter((r) => r.id !== id),
+      reconnecting: omitKey(s.reconnecting, id),
+      reconnectError: omitKey(s.reconnectError, id),
+    }))
+    await Promise.allSettled([deleteHandleRecord(id), pst.forgetPersisted(id)])
+  }
 
-  /** Open a batch of standalone .msg/.eml files as one synthetic mailbox. */
+  /** Cap the `handles` store size by evicting the least-recently-opened rows
+   *  beyond `HANDLES_CAP`, deleting their cached search index too. */
+  const enforceHandleCap = async (): Promise<void> => {
+    const records = [...get().remembered].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
+    const overflow = records.slice(HANDLES_CAP)
+    for (const rec of overflow) await forgetRememberedImpl(rec.id)
+  }
+
+  /** Shared by the silent boot-restore path (`reconnect`) and the click-only
+   *  path (`grantAndReconnect`); `gesture` picks which permission call is
+   *  legal to make (`requestPermission` needs a real user gesture behind it,
+   *  `queryPermission` doesn't). Never rejects: every failure resolves into
+   *  `reconnecting`/`reconnectError` state instead, so a caller doing a
+   *  sequential `await` over several ids never gets thrown out of the loop. */
+  const reconnectInternal = (id: string, gesture: boolean): Promise<void> => {
+    if (get().sources.some((s) => s.id === id)) return Promise.resolve() // already open
+    const record = get().remembered.find((r) => r.id === id)
+    if (!record) return Promise.resolve()
+
+    set((s) => ({
+      reconnecting: { ...s.reconnecting, [id]: 'checking' },
+      reconnectError: omitKey(s.reconnectError, id),
+    }))
+
+    const askPermission = () =>
+      gesture
+        ? record.handle.requestPermission({ mode: 'read' })
+        : record.handle.queryPermission({ mode: 'read' })
+
+    return askPermission()
+      .then(async (state) => {
+        if (state !== 'granted') {
+          set((s) => ({ reconnecting: { ...s.reconnecting, [id]: 'needs-permission' } }))
+          return
+        }
+        set((s) => ({ reconnecting: { ...s.reconnecting, [id]: 'opening' } }))
+        const file = await record.handle.getFile()
+        await registerAndOpen(
+          id,
+          { fileName: file.name, size: file.size, label: record.label },
+          (openId) => pst.openSource(openId, file, true),
+          PST_OPEN_FAIL_MESSAGE,
+          { file, handle: record.handle },
+        )
+        set((s) => ({ reconnecting: { ...s.reconnecting, [id]: 'idle' } }))
+      })
+      .catch((err: unknown) => {
+        const message =
+          err instanceof Error && err.name === 'NotFoundError'
+            ? 'File not found — it may have moved or been deleted.'
+            : 'Could not reconnect to this file. It may be blocked or unavailable.'
+        set((s) => ({
+          reconnecting: { ...s.reconnecting, [id]: 'error' },
+          reconnectError: { ...s.reconnectError, [id]: message },
+        }))
+      })
+  }
+
+  /** Open one PST/OST File, optionally with a captured file handle for
+   *  cross-refresh persistence: the id is then derived from file identity
+   *  (`sourceKey`) instead of a random per-session counter, so re-dropping
+   *  the same file always lands on the same id and its existing cache,
+   *  rather than minting a duplicate. */
+  const startSource = (file: File, handle?: FileSystemFileHandle) => {
+    const seed = { fileName: file.name, size: file.size, label: stripExt(file.name) }
+    if (handle) {
+      void sourceKey(file)
+        .then((id) =>
+          registerAndOpen(id, seed, (openId) => pst.openSource(openId, file, true), PST_OPEN_FAIL_MESSAGE, {
+            file,
+            handle,
+          }),
+        )
+        .catch(() =>
+          registerAndOpen(uid(), seed, (openId) => pst.openSource(openId, file, false), PST_OPEN_FAIL_MESSAGE),
+        )
+    } else {
+      void registerAndOpen(
+        uid(),
+        seed,
+        (openId) => pst.openSource(openId, file, false),
+        PST_OPEN_FAIL_MESSAGE,
+      )
+    }
+  }
+
+  /** Open a batch of standalone .msg/.eml files as one synthetic mailbox.
+   *  Never persistable: a batch has no single stable file identity. */
   const startMsgSource = (files: File[]) => {
     if (!files.length) return
     const exts = new Set(files.map((f) => (/\.eml$/i.test(f.name) ? '.eml' : '.msg')))
@@ -286,7 +460,8 @@ export const useApp = create<AppState>((set, get) => {
             size: files.reduce((n, f) => n + f.size, 0),
             label: 'Messages',
           }
-    openSource(
+    void registerAndOpen(
+      uid(),
       seed,
       (id) => pst.openMsgSource(id, files),
       (files.length === 1
@@ -296,7 +471,8 @@ export const useApp = create<AppState>((set, get) => {
     )
   }
 
-  /** Scan a zip for PST/OST files and open each one found. */
+  /** Scan a zip for PST/OST files and open each one found. Zip-extracted
+   *  files are synthetic in-memory Files (fflate), so never persistable. */
   const handleZip = (file: File) => {
     const scanId = uid()
     set((s) => ({
@@ -368,6 +544,9 @@ export const useApp = create<AppState>((set, get) => {
     searchSortDir: 'desc',
     exportSel: {},
     exporting: false,
+    remembered: [],
+    reconnecting: {},
+    reconnectError: {},
     navWidth: readNum(NAV_W_KEY, 272),
     listWidth: readNum(LIST_W_KEY, 380),
 
@@ -382,24 +561,35 @@ export const useApp = create<AppState>((set, get) => {
       set({ listWidth: v })
     },
 
-    addFiles: (files) => {
+    addFiles: (files, handles) => {
       // Group .msg/.eml files dropped together into one "Messages" mailbox
       // instead of creating a source per file.
       const msgs: File[] = []
-      for (const file of files) {
+      files.forEach((file, i) => {
+        const handle = handles?.[i]
         if (/\.zip$/i.test(file.name)) handleZip(file)
         else if (/\.(msg|eml)$/i.test(file.name)) msgs.push(file)
-        else startSource(file)
-      }
+        else startSource(file, handle)
+      })
       startMsgSource(msgs)
     },
 
     removeSource: (id) => {
       void pst.closeSource(id)
+      void pst.forgetPersisted(id).catch(() => {})
+      void deleteHandleRecord(id).catch(() => {})
       set((s) => {
         const sources = s.sources.filter((src) => src.id !== id)
-        // Removing the last mailbox returns to a clean slate.
-        if (sources.length === 0) return freshState()
+        const remembered = s.remembered.filter((r) => r.id !== id)
+        const reconnecting = omitKey(s.reconnecting, id)
+        const reconnectError = omitKey(s.reconnectError, id)
+        // Removing the last mailbox returns to a clean slate, but the
+        // remembered/reconnect state is history, not session state — it must
+        // survive so the just-removed mailbox doesn't reappear the moment
+        // the source list empties and DropZone/the remembered list remounts.
+        if (sources.length === 0) {
+          return { ...freshState(), remembered, reconnecting, reconnectError }
+        }
 
         const wasSelected = s.selection.sourceId === id
         // Drop anything tied to the removed source.
@@ -408,6 +598,9 @@ export const useApp = create<AppState>((set, get) => {
         )
         return {
           sources,
+          remembered,
+          reconnecting,
+          reconnectError,
           selection: wasSelected
             ? { sourceId: null, folderId: null, messageId: null }
             : s.selection,
@@ -420,14 +613,32 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     clearSources: () => {
-      for (const src of get().sources) void pst.closeSource(src.id)
-      set(freshState())
+      const ids = get().sources.map((src) => src.id)
+      for (const id of ids) {
+        void pst.closeSource(id)
+        void pst.forgetPersisted(id).catch(() => {})
+        void deleteHandleRecord(id).catch(() => {})
+      }
+      set((s) => ({
+        ...freshState(),
+        remembered: s.remembered.filter((r) => !ids.includes(r.id)),
+        reconnecting: {},
+        reconnectError: {},
+      }))
     },
 
-    renameSource: (id, label) =>
+    renameSource: (id, label) => {
       set((s) => ({
         sources: s.sources.map((src) => (src.id === id ? { ...src, label } : src)),
-      })),
+      }))
+      // Best-effort: don't leave "Recently opened" showing a stale filename
+      // after a rename, for a mailbox that happens to be persisted.
+      if (get().remembered.some((r) => r.id === id)) {
+        void updateHandleRecord(id, { label })
+          .then(() => get().loadRemembered())
+          .catch(() => {})
+      }
+    },
 
     toggleFolder: (sourceId, folderId) =>
       set((s) => {
@@ -621,6 +832,32 @@ export const useApp = create<AppState>((set, get) => {
         .finally(() => {
           clearTimeout(safety)
           set({ exporting: false })
+        })
+    },
+
+    loadRemembered: () =>
+      getAllHandleRecords()
+        .then((records) => {
+          set({ remembered: [...records].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt) })
+        })
+        .catch(() => {
+          /* best-effort: an unusable IndexedDB just means an empty remembered list */
+        }),
+
+    reconnect: (id) => reconnectInternal(id, false),
+    grantAndReconnect: (id) => reconnectInternal(id, true),
+
+    forgetRemembered: (id) => {
+      void forgetRememberedImpl(id)
+    },
+
+    clearAllPersisted: () => {
+      void clearAllStores()
+        .then(() => {
+          set({ remembered: [], reconnecting: {}, reconnectError: {} })
+        })
+        .catch(() => {
+          /* best-effort */
         })
     },
   }
