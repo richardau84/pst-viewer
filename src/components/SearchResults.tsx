@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useApp } from '../store/store'
 import type { SearchHit } from '../types'
 import { formatDateShort } from '../lib/format'
+import { findFolderName } from '../lib/searchFilters'
 import { Paperclip, Spinner } from './icons'
 import { SortControl } from './SortControl'
 
@@ -23,6 +24,7 @@ export function SearchResults() {
   const sources = useApp((s) => s.sources)
   const exportSel = useApp((s) => s.exportSel)
   const toggleExport = useApp((s) => s.toggleExport)
+  const folderFilter = useApp((s) => s.searchFilters.folder)
   const searchSortBy = useApp((s) => s.searchSortBy)
   const searchSortDir = useApp((s) => s.searchSortDir)
   const setSearchSort = useApp((s) => s.setSearchSort)
@@ -33,6 +35,15 @@ export function SearchResults() {
     for (const s of sources) m[s.id] = s.label
     return m
   }, [sources])
+
+  // Results are scoped to a folder whenever one is picked in the filters or
+  // clicked in the folder list — name it, so a short result set reads as
+  // "this folder only" rather than "search is broken".
+  const folderName = useMemo(() => {
+    if (!folderFilter) return null
+    const src = sources.find((s) => s.id === folderFilter.sourceId)
+    return src?.index ? findFolderName(src.index.rootFolder, folderFilter.folderId) : null
+  }, [folderFilter, sources])
 
   const parentRef = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({
@@ -51,6 +62,14 @@ export function SearchResults() {
           </span>
           {results.length > 0 && (
             <span className="text-[11px] text-slate-400">{results.length}</span>
+          )}
+          {folderName && (
+            <span
+              className="min-w-0 truncate rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-300"
+              data-tip="Showing matches in this folder only"
+            >
+              in {folderName}
+            </span>
           )}
         </div>
         {results.length > 0 && (
@@ -72,7 +91,10 @@ export function SearchResults() {
             </>
           ) : (
             <>
-              <div>{query ? `No matches for “${query}”.` : 'No messages match these filters.'}</div>
+              <div>
+                {query ? `No matches for “${query}”` : 'No messages match these filters'}
+                {folderName ? ` in ${folderName}.` : '.'}
+              </div>
               {anyIndexing ? (
                 <div className="text-xs text-slate-400">Still indexing, try again shortly.</div>
               ) : null}

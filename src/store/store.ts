@@ -264,6 +264,38 @@ export const useApp = create<AppState>((set, get) => {
    *  open time otherwise competes with the first folder the user sees. */
   let pendingFolderLoad: Promise<unknown> = Promise.resolve()
 
+  /** Open a folder in the list pane: select it and (re)load its messages. The
+   *  shared body behind both a click in the folder list and a folder picked in
+   *  the filters dialog, so the two can't drift apart. */
+  const openFolder = (sourceId: string, folderId: string) => {
+    set({
+      selection: { sourceId, folderId, messageId: null },
+      messages: [],
+      messagesUnreadable: 0,
+      messagesLoading: true,
+      messageContent: null,
+      contentLoading: false,
+    })
+    pendingFolderLoad = pst
+      .getFolderMessages(sourceId, folderId)
+      .then(({ messages, unreadable }) => {
+        const sel = get().selection
+        if (sel.sourceId !== sourceId || sel.folderId !== folderId) return
+        const { sortBy, sortDir } = get()
+        set({
+          messages: sortMessages(messages, sortBy, sortDir),
+          messagesUnreadable: unreadable,
+          messagesLoading: false,
+        })
+      })
+      .catch(() => {
+        const sel = get().selection
+        if (sel.sourceId === sourceId && sel.folderId === folderId) {
+          set({ messages: [], messagesUnreadable: 0, messagesLoading: false })
+        }
+      })
+  }
+
   /** Register a source and run the shared open -> index flow. This is the
    *  single real entry point for turning an id into a live `Source`, reached
    *  from a fresh drop, a boot-time silent restore, and a manual Reconnect
@@ -321,7 +353,9 @@ export const useApp = create<AppState>((set, get) => {
 
         if (!get().selection.folderId) {
           const target = firstFolderWithMessages(index.rootFolder)
-          if (target) get().selectFolder(id, target)
+          // `openFolder`, not `selectFolder`: opening a mailbox shouldn't
+          // re-point an active search's folder filter at its inbox.
+          if (target) openFolder(id, target)
         }
 
         if (persist) {
@@ -684,32 +718,19 @@ export const useApp = create<AppState>((set, get) => {
       }),
 
     selectFolder: (sourceId, folderId) => {
-      set({
-        selection: { sourceId, folderId, messageId: null },
-        messages: [],
-        messagesUnreadable: 0,
-        messagesLoading: true,
-        messageContent: null,
-        contentLoading: false,
-      })
-      pendingFolderLoad = pst
-        .getFolderMessages(sourceId, folderId)
-        .then(({ messages, unreadable }) => {
-          const sel = get().selection
-          if (sel.sourceId !== sourceId || sel.folderId !== folderId) return
-          const { sortBy, sortDir } = get()
-          set({
-            messages: sortMessages(messages, sortBy, sortDir),
-            messagesUnreadable: unreadable,
-            messagesLoading: false,
-          })
-        })
-        .catch(() => {
-          const sel = get().selection
-          if (sel.sourceId === sourceId && sel.folderId === folderId) {
-            set({ messages: [], messagesUnreadable: 0, messagesLoading: false })
-          }
-        })
+      const { searchQuery, searchFilters } = get()
+      // While a search or filter is running it's the results pane on screen,
+      // not the folder listing — so re-point the folder filter at the folder
+      // just clicked and the pane narrows to it, rather than ignoring the
+      // click and leaving the same mailbox-wide results up.
+      if (searchQuery.trim() || hasActiveFilters(searchFilters)) {
+        const cur = searchFilters.folder
+        if (!cur || cur.sourceId !== sourceId || cur.folderId !== folderId) {
+          set({ searchFilters: { ...searchFilters, folder: { sourceId, folderId } } })
+          get().runSearch()
+        }
+      }
+      openFolder(sourceId, folderId)
     },
 
     setSort: (sortBy, sortDir) => {
@@ -744,6 +765,14 @@ export const useApp = create<AppState>((set, get) => {
     setSearchFilters: (searchFilters) => {
       set({ searchFilters })
       get().runSearch()
+      // The other direction of the same rule: a folder picked in the dialog
+      // becomes the selected folder, so the tree highlights what the results
+      // pane is showing and clearing the search leaves that folder open.
+      const { folder } = searchFilters
+      const sel = get().selection
+      if (folder && (sel.sourceId !== folder.sourceId || sel.folderId !== folder.folderId)) {
+        openFolder(folder.sourceId, folder.folderId)
+      }
     },
 
     setSearchSort: (searchSortBy, searchSortDir) => {
