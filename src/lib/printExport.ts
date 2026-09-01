@@ -78,16 +78,16 @@ export function buildPrintDocument(contents: MessageContent[]): string {
 <style>
   @page { margin: 0; }
   html, body { height: auto !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #111; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #131316; }
   .email { padding: 14mm; box-sizing: border-box; page-break-after: always; }
   .email:last-child { page-break-after: auto; }
-  .email-header { border-bottom: 2px solid #cbd5e1; padding-bottom: 10px; margin-bottom: 16px; }
+  .email-header { border-bottom: 2px solid #cdcfd4; padding-bottom: 10px; margin-bottom: 16px; }
   .email-header h1 { font-size: 18px; margin: 0 0 8px; }
-  .email-header .meta { font-size: 12px; margin: 2px 0; color: #333; }
+  .email-header .meta { font-size: 12px; margin: 2px 0; color: #313235; }
   .email-body { font-size: 13px; line-height: 1.5; }
   .email-body img { max-width: 100%; height: auto; }
   pre.plain { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }
-  a { color: #0b57d0; }
+  a { color: #1954f5; }
 </style></head>
 <body>${sections}</body></html>`
 }

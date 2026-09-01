@@ -4,21 +4,21 @@ import { termsRegExp } from '../lib/highlight'
 /** Base styles injected into the email document for readability. */
 const BASE_CSS = `
 *{box-sizing:border-box}
-html,body{margin:0;padding:16px;background:#fff;color:#111;
+html,body{margin:0;padding:16px;background:#fafafa;color:#131316;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   font-size:14px;line-height:1.5;word-wrap:break-word;overflow-wrap:anywhere}
 img{max-width:100%;height:auto;cursor:zoom-in}
 a img{cursor:pointer}
-a{color:#0b57d0}
+a{color:#1954f5}
 table{max-width:100%}
-blockquote{border-left:3px solid #ddd;margin:0 0 0 8px;padding-left:12px;color:#555}
-mark.pstv-hit{background:#facc15;color:#111;border-radius:2px}
-html{scrollbar-width:auto;scrollbar-color:#94a3b8 #e2e8f0}
+blockquote{border-left:3px solid #cdcfd4;margin:0 0 0 8px;padding-left:12px;color:#54555b}
+mark.pstv-hit{background:#ffe01a;color:#131316;border-radius:2px}
+html{scrollbar-width:auto;scrollbar-color:#b7bac2 #e0e2e5}
 ::-webkit-scrollbar{width:14px;height:14px}
-::-webkit-scrollbar-track{background:#e2e8f0}
-::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:8px;border:3px solid #e2e8f0}
-::-webkit-scrollbar-thumb:hover{background:#64748b}
-::-webkit-scrollbar-corner{background:#e2e8f0}
+::-webkit-scrollbar-track{background:#e0e2e5}
+::-webkit-scrollbar-thumb{background:#b7bac2;border-radius:8px;border:3px solid #e0e2e5}
+::-webkit-scrollbar-thumb:hover{background:#a4a7b0}
+::-webkit-scrollbar-corner{background:#e0e2e5}
 `
 
 const MAX_MARKS = 500

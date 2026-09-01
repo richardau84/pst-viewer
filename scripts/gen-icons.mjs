@@ -9,7 +9,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pub = join(root, 'public')
 const svg = readFileSync(join(pub, 'icon.svg'))
 
-const BG = '#0b1220'
+const BG = '#313235'
 
 // Standard ("any") icons: the branded rounded-square logo on a transparent
 // canvas, shown as-is where the platform does not mask icons. High density so
@@ -27,8 +27,8 @@ const fullBleed = (scale) =>
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="512" height="512">' +
       `<rect width="64" height="64" fill="${BG}"/>` +
       `<g transform="translate(32 32) scale(${scale}) translate(-32 -32)">` +
-      '<rect x="12" y="18" width="40" height="28" rx="4" fill="none" stroke="#38bdf8" stroke-width="3"/>' +
-      '<path d="M13 21 L32 35 L51 21" fill="none" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<rect x="12" y="18" width="40" height="28" rx="4" fill="none" stroke="#26d07c" stroke-width="3"/>' +
+      '<path d="M13 21 L32 35 L51 21" fill="none" stroke="#26d07c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>' +
       '</g></svg>',
   )
 

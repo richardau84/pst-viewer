@@ -247,7 +247,7 @@ function Chip({ tone, children }: { tone: 'slate' | 'amber' | 'green'; children:
   const tones = {
     slate: 'border-slate-700 bg-slate-800 text-slate-300',
     amber: 'border-amber-500/30 bg-amber-500/15 text-amber-300',
-    green: 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300',
+    green: 'border-lime-500/30 bg-lime-500/15 text-lime-300',
   }
   return (
     <span className={`rounded border px-2 py-0.5 text-[11px] font-medium ${tones[tone]}`}>

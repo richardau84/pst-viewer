@@ -1,5 +1,139 @@
 @import "tailwindcss";
 
+/* Setgo Design System — Foundations palette. Overrides Tailwind's default
+   color scales so every bg-/text-/border-* utility resolves to an approved
+   design-system color instead of Tailwind's stock palette. */
+@theme {
+  /* Neutral / slate */
+  --color-slate-50: #f6f6f7;
+  --color-slate-100: #eef0f1;
+  --color-slate-200: #e0e2e5;
+  --color-slate-300: #cdcfd4;
+  --color-slate-400: #b7bac2;
+  --color-slate-500: #a4a7b0;
+  --color-slate-600: #9799a4;
+  --color-slate-700: #7b7d87;
+  --color-slate-800: #64656f;
+  --color-slate-900: #54555b;
+  --color-slate-950: #313235;
+
+  /* Semantic / blue (info) — also backs fuchsia usages in the app */
+  --color-blue-50: #f0f6ff;
+  --color-blue-100: #dbeaff;
+  --color-blue-200: #bdd8ff;
+  --color-blue-300: #8fc1ff;
+  --color-blue-400: #579dff;
+  --color-blue-500: #246dff;
+  --color-blue-600: #1954f5;
+  --color-blue-700: #1440e1;
+  --color-blue-800: #1634b6;
+  --color-blue-900: #19338f;
+  --color-blue-950: #142057;
+  --color-fuchsia-50: var(--color-blue-50);
+  --color-fuchsia-100: var(--color-blue-100);
+  --color-fuchsia-200: var(--color-blue-200);
+  --color-fuchsia-300: var(--color-blue-300);
+  --color-fuchsia-400: var(--color-blue-400);
+  --color-fuchsia-500: var(--color-blue-500);
+  --color-fuchsia-600: var(--color-blue-600);
+  --color-fuchsia-700: var(--color-blue-700);
+  --color-fuchsia-800: var(--color-blue-800);
+  --color-fuchsia-900: var(--color-blue-900);
+  --color-fuchsia-950: var(--color-blue-950);
+
+  /* Semantic / amber (warning) — also backs yellow usages in the app */
+  --color-amber-50: #ffffeb;
+  --color-amber-100: #fffcc7;
+  --color-amber-200: #fff985;
+  --color-amber-300: #fff047;
+  --color-amber-400: #ffe01a;
+  --color-amber-500: #ffc300;
+  --color-amber-600: #e09600;
+  --color-amber-700: #bb6b02;
+  --color-amber-800: #965108;
+  --color-amber-900: #7a420b;
+  --color-amber-950: #472100;
+  --color-yellow-50: var(--color-amber-50);
+  --color-yellow-100: var(--color-amber-100);
+  --color-yellow-200: var(--color-amber-200);
+  --color-yellow-300: var(--color-amber-300);
+  --color-yellow-400: var(--color-amber-400);
+  --color-yellow-500: var(--color-amber-500);
+  --color-yellow-600: var(--color-amber-600);
+  --color-yellow-700: var(--color-amber-700);
+  --color-yellow-800: var(--color-amber-800);
+  --color-yellow-900: var(--color-amber-900);
+  --color-yellow-950: var(--color-amber-950);
+
+  /* Semantic / red (danger) — backs rose usages in the app */
+  --color-rose-50: #fff0f1;
+  --color-rose-100: #ffe0e2;
+  --color-rose-200: #ffc7ca;
+  --color-rose-300: #ff9ea3;
+  --color-rose-400: #ff666e;
+  --color-rose-500: #fb3741;
+  --color-rose-600: #ea1a25;
+  --color-rose-700: #c5111a;
+  --color-rose-800: #a11219;
+  --color-rose-900: #88161c;
+  --color-rose-950: #470609;
+
+  /* Semantic / lime (success) */
+  --color-lime-50: #f3fce9;
+  --color-lime-100: #e4f8ce;
+  --color-lime-200: #cdf2a6;
+  --color-lime-300: #a9e76f;
+  --color-lime-400: #8ad841;
+  --color-lime-500: #69b823;
+  --color-lime-600: #539a19;
+  --color-lime-700: #3f7317;
+  --color-lime-800: #355d18;
+  --color-lime-900: #2e4d19;
+  --color-lime-950: #152b08;
+
+  /* Brand / emerald (Primary) — the app's general interactive/brand accent
+     (buttons, active nav, links, focus rings), not the info/success semantic */
+  --color-emerald-50: #f0fdf6;
+  --color-emerald-100: #dcfceb;
+  --color-emerald-200: #bcf6d8;
+  --color-emerald-300: #87eeba;
+  --color-emerald-400: #4cdc94;
+  --color-emerald-500: #26d07c;
+  --color-emerald-600: #17a25d;
+  --color-emerald-700: #167f4b;
+  --color-emerald-800: #17643f;
+  --color-emerald-900: #155235;
+  --color-emerald-950: #052e1c;
+  --color-sky-50: var(--color-emerald-50);
+  --color-sky-100: var(--color-emerald-100);
+  --color-sky-200: var(--color-emerald-200);
+  --color-sky-300: var(--color-emerald-300);
+  --color-sky-400: var(--color-emerald-400);
+  --color-sky-500: var(--color-emerald-500);
+  --color-sky-600: var(--color-emerald-600);
+  --color-sky-700: var(--color-emerald-700);
+  --color-sky-800: var(--color-emerald-800);
+  --color-sky-900: var(--color-emerald-900);
+  --color-sky-950: var(--color-emerald-950);
+
+  /* Brand / violet */
+  --color-violet-50: #f5f3ff;
+  --color-violet-100: #ece9fe;
+  --color-violet-200: #dcd6fe;
+  --color-violet-300: #c1b5fd;
+  --color-violet-400: #a38cf9;
+  --color-violet-500: #855df5;
+  --color-violet-600: #753bec;
+  --color-violet-700: #6226d0;
+  --color-violet-800: #5622b5;
+  --color-violet-900: #481e94;
+  --color-violet-950: #2b1164;
+
+  /* Core */
+  --color-white: #fafafa;
+  --color-black: #131316;
+}
+
 html,
 body,
 #root {
@@ -8,8 +142,8 @@ body,
 
 body {
   margin: 0;
-  background-color: #020617;
-  color: #e2e8f0;
+  background-color: var(--color-slate-950);
+  color: var(--color-slate-200);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
     Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -26,27 +160,27 @@ input[type="search"]::-webkit-search-decoration {
 /* Thin dark scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #475569 transparent;
+  scrollbar-color: var(--color-slate-600) transparent;
 }
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #475569;
+  background: var(--color-slate-600);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
+  background: var(--color-slate-500);
   background-clip: padding-box;
 }
 
 /* Clear, wide, easy-to-click scrollbars for preview areas (dark surfaces). */
 .scroll-clear {
   scrollbar-width: auto;
-  scrollbar-color: #64748b #0f172a;
+  scrollbar-color: var(--color-slate-500) var(--color-slate-900);
   overflow: auto;
 }
 .scroll-clear::-webkit-scrollbar {
@@ -54,24 +188,24 @@ input[type="search"]::-webkit-search-decoration {
   height: 14px;
 }
 .scroll-clear::-webkit-scrollbar-track {
-  background: #0f172a;
+  background: var(--color-slate-900);
 }
 .scroll-clear::-webkit-scrollbar-thumb {
-  background: #64748b;
+  background: var(--color-slate-500);
   border-radius: 8px;
-  border: 3px solid #0f172a;
+  border: 3px solid var(--color-slate-900);
 }
 .scroll-clear::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: var(--color-slate-400);
 }
 .scroll-clear::-webkit-scrollbar-corner {
-  background: #0f172a;
+  background: var(--color-slate-900);
 }
 
 /* Light variant for previews on a white background (spreadsheets). */
 .scroll-clear-light {
   scrollbar-width: auto;
-  scrollbar-color: #94a3b8 #e2e8f0;
+  scrollbar-color: var(--color-slate-400) var(--color-slate-200);
   overflow: auto;
 }
 .scroll-clear-light::-webkit-scrollbar {
@@ -79,18 +213,18 @@ input[type="search"]::-webkit-search-decoration {
   height: 14px;
 }
 .scroll-clear-light::-webkit-scrollbar-track {
-  background: #e2e8f0;
+  background: var(--color-slate-200);
 }
 .scroll-clear-light::-webkit-scrollbar-thumb {
-  background: #94a3b8;
+  background: var(--color-slate-400);
   border-radius: 8px;
-  border: 3px solid #e2e8f0;
+  border: 3px solid var(--color-slate-200);
 }
 .scroll-clear-light::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
+  background: var(--color-slate-600);
 }
 .scroll-clear-light::-webkit-scrollbar-corner {
-  background: #e2e8f0;
+  background: var(--color-slate-200);
 }
 
 /* Spreadsheet table styling (rendered inline, not in an iframe). */
@@ -99,14 +233,14 @@ input[type="search"]::-webkit-search-decoration {
 }
 .sheet-view td,
 .sheet-view th {
-  border: 1px solid #d4d4d8;
+  border: 1px solid var(--color-slate-300);
   padding: 3px 8px;
   white-space: nowrap;
   font-size: 13px;
-  color: #111;
+  color: var(--color-black);
 }
 .sheet-view tr:first-child td,
 .sheet-view tr:first-child th {
-  background: #f1f5f9;
+  background: var(--color-slate-100);
   font-weight: 600;
 }
