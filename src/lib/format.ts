@@ -21,6 +21,12 @@ export function formatDate(ms: number | null | undefined): string {
   })
 }
 
+/** Format a recipient as "Name <email>", falling back to whichever part is present. */
+export function formatRecipient(r: { name?: string | null; email?: string | null }): string {
+  const name = r.name || r.email || ''
+  return r.name && r.email ? `${name} <${r.email}>` : name
+}
+
 /** Compact list-friendly date: time if today, "MMM d" this year, else "MMM d, yyyy". */
 export function formatDateShort(ms: number | null | undefined): string {
   if (ms == null) return ''

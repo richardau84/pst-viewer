@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useApp } from '../store/store'
 import type { MessageContent, RecipientInfo } from '../types'
-import { formatDate } from '../lib/format'
+import { formatDate, formatRecipient } from '../lib/format'
 import { categoryFromNameMime } from '../lib/detectType'
 import { sanitizeEmailHtml } from '../lib/sanitizeHtml'
 import { queryTerms, termsRegExp } from '../lib/highlight'
@@ -9,6 +9,7 @@ import { EmailFrame } from './EmailFrame'
 import { ImageLightbox } from './ImageLightbox'
 import { AttachmentBar } from './attachments/AttachmentBar'
 import { HeadersDialog } from './HeadersDialog'
+import { RecipientsDialog } from './RecipientsDialog'
 import {
   AppointmentCardView,
   ContactCardView,
@@ -135,17 +136,17 @@ export function MessageView({
             </HeaderLine>
             {content.to.length > 0 && (
               <HeaderLine label="To">
-                <Recipients list={content.to} />
+                <Recipients label="To" list={content.to} />
               </HeaderLine>
             )}
             {content.cc.length > 0 && (
               <HeaderLine label="Cc">
-                <Recipients list={content.cc} />
+                <Recipients label="Cc" list={content.cc} />
               </HeaderLine>
             )}
             {content.bcc.length > 0 && (
               <HeaderLine label="Bcc">
-                <Recipients list={content.bcc} />
+                <Recipients label="Bcc" list={content.bcc} />
               </HeaderLine>
             )}
             {content.date != null && (
@@ -229,17 +230,44 @@ function HighlightedText({ text, terms }: { text: string; terms: string[] }) {
   return <>{nodes}</>
 }
 
-function Recipients({ list }: { list: RecipientInfo[] }) {
+/** To/Cc/Bcc line, clamped to 3 lines with a "+ N more" button that opens the full list. */
+function Recipients({ label, list }: { label: string; list: RecipientInfo[] }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [overflowing, setOverflowing] = useState(false)
+  const [showAll, setShowAll] = useState(false)
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const check = () => setOverflowing(el.scrollHeight - el.clientHeight > 1)
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [list])
+
   return (
-    <>
-      {list.map((r, i) => (
-        <span key={`${r.email}-${i}`}>
-          {i > 0 && '; '}
-          {r.name || r.email}
-          {r.name && r.email ? ` <${r.email}>` : ''}
-        </span>
-      ))}
-    </>
+    <div className="min-w-0">
+      <div ref={ref} className="line-clamp-3">
+        {list.map((r, i) => (
+          <span key={`${r.email}-${i}`}>
+            {i > 0 && '; '}
+            {formatRecipient(r)}
+          </span>
+        ))}
+      </div>
+      {overflowing && (
+        <button
+          onClick={() => setShowAll(true)}
+          className="mt-0.5 text-xs font-medium text-sky-400 transition hover:text-sky-300 hover:underline"
+        >
+          + more
+        </button>
+      )}
+      {showAll && (
+        <RecipientsDialog label={label} list={list} onClose={() => setShowAll(false)} />
+      )}
+    </div>
   )
 }
 
