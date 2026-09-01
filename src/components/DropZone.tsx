@@ -2,6 +2,7 @@ import { useRef, type ChangeEvent } from 'react'
 import { useApp } from '../store/store'
 import { ACCEPT_ATTR, FSA_SUPPORTED, PICKER_TYPES, filterAccepted, isPersistableName } from '../lib/files'
 import { RememberedList } from './RememberedList'
+import { AboutContent } from './About'
 
 export function DropZone() {
   const addFiles = useApp((s) => s.addFiles)
@@ -66,6 +67,10 @@ export function DropZone() {
           Browse files
         </span>
       </button>
+
+      <div className="w-full max-w-xl rounded-lg border border-slate-800 bg-slate-900/40 p-4 text-xs text-slate-400">
+        <AboutContent />
+      </div>
 
       <div className="w-full max-w-xl">
         <RememberedList />

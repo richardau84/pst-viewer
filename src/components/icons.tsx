@@ -256,6 +256,16 @@ export function NoteIcon({ className }: IconProps) {
   )
 }
 
+export function Help({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={1.8}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .8-1 1.7v.3" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 17h.01" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 export function Journal({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={1.7}>

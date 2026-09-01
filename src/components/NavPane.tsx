@@ -3,6 +3,7 @@ import { useApp, type Source } from '../store/store'
 import type { FolderNode } from '../types'
 import { ACCEPT_ATTR, FSA_SUPPORTED, PICKER_TYPES, filterAccepted, isPersistableName } from '../lib/files'
 import { RememberedList } from './RememberedList'
+import { AboutDialog } from './About'
 import {
   Alert,
   Archive,
@@ -11,6 +12,7 @@ import {
   Chat,
   Drafts,
   FolderIcon,
+  Help,
   Inbox,
   Journal,
   Junk,
@@ -100,16 +102,25 @@ export function sortFolders(nodes: FolderNode[]): FolderNode[] {
 export function NavPane() {
   const sources = useApp((s) => s.sources)
   const [mailboxesOpen, setMailboxesOpen] = useState(true)
+  const [aboutOpen, setAboutOpen] = useState(false)
 
   return (
     <nav className="flex h-full min-h-0 flex-col border-r border-slate-800 bg-slate-900/40">
       <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-slate-800 px-3">
         <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="h-7 w-7" />
-        <div className="leading-tight">
+        <div className="min-w-0 flex-1 leading-tight">
           <div className="text-sm font-semibold text-slate-100">PST Viewer</div>
           <div className="text-[11px] text-slate-400">Local · Offline · Private</div>
         </div>
+        <button
+          onClick={() => setAboutOpen(true)}
+          className="shrink-0 rounded-full p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
+          data-tip="About PST Viewer"
+        >
+          <Help className="h-4 w-4" />
+        </button>
       </div>
+      {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
 
       <button
         onClick={() => setMailboxesOpen((o) => !o)}
