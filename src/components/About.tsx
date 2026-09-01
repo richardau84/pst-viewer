@@ -8,7 +8,7 @@ export function AboutContent() {
   return (
     <>
       <p>
-        PST Viewer reads Outlook mailbox files entirely in your browser — nothing is ever
+        Outlook Archive Viewer reads Outlook mailbox files entirely in your browser — nothing is ever
         uploaded anywhere. It parses the folder tree, lets you browse and read messages and
         attachments, and builds a searchable index so you can find anything across the whole
         mailbox.
@@ -45,7 +45,7 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-slate-800 px-4 py-3">
-          <h2 className="text-sm font-semibold text-slate-100">About PST Viewer</h2>
+          <h2 className="text-sm font-semibold text-slate-100">About Outlook Archive File Viewer</h2>
           <button
             onClick={onClose}
             className="rounded-full p-1.5 text-slate-300 transition hover:bg-slate-800 hover:text-slate-100"

@@ -1,4 +1,4 @@
-# PST Viewer
+# Outlook Archive Viewer
 
 A fast, private, **fully in-browser** viewer for Outlook **`.pst` / `.ost`** mailboxes and standalone **`.msg` / `.eml`** messages (and `.zip` archives containing them). Everything runs locally on your device: no server, no Python, no build tools to install for end users, and **nothing is ever uploaded**.
 

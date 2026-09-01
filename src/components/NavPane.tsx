@@ -109,13 +109,13 @@ export function NavPane() {
       <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-slate-800 px-3">
         <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="h-7 w-7" />
         <div className="min-w-0 flex-1 leading-tight">
-          <div className="text-sm font-semibold text-slate-100">PST Viewer</div>
+          <div className="text-sm font-semibold text-slate-100">Outlook Archive Viewer</div>
           <div className="text-[11px] text-slate-400">Local · Offline · Private</div>
         </div>
         <button
           onClick={() => setAboutOpen(true)}
           className="shrink-0 rounded-full p-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
-          data-tip="About PST Viewer"
+          data-tip="About Outlook Archive Viewer"
         >
           <Help className="h-4 w-4" />
         </button>

@@ -1,6 +1,6 @@
 # Deploying PST Viewer
 
-PST Viewer is a **static site** (a single-page app with a service worker). There is
+Outlook Archive Viewer is a **static site** (a single-page app with a service worker). There is
 no backend, no database, and nothing to upload at runtime: mailboxes are read and
 processed entirely in the visitor's browser. To deploy it, either grab the
 **prebuilt Docker image** ([Option B](#option-b-docker-prebuilt-image-hardened-by-default) -
