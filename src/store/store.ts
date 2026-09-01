@@ -83,7 +83,7 @@ interface AppState {
   searchSortDir: SortDir
 
   /** Messages picked for PDF export, keyed `${sourceId}:${messageId}`. */
-  exportSel: Record<string, { sourceId: string; messageId: string }>
+  exportSel: Record<string, { sourceId: string; messageId: string; folderId?: string }>
   exporting: boolean
 
   /** Persistable mailboxes remembered from a previous session (Chromium
@@ -114,7 +114,7 @@ interface AppState {
   clearSearch: () => void
   openHit: (hit: SearchHit) => void
 
-  toggleExport: (sourceId: string, messageId: string) => void
+  toggleExport: (sourceId: string, messageId: string, folderId?: string) => void
   clearExport: () => void
   exportSelected: (direction?: 'asc' | 'desc') => void
   exportSingle: (sourceId: string, messageId: string) => void
@@ -257,6 +257,12 @@ function freshState(): Partial<AppState> {
 }
 
 export const useApp = create<AppState>((set, get) => {
+  /** The most recent folder listing, settled or not. Background indexing waits
+   *  on it so the mailbox the user is staring at wins the read queue: both run
+   *  in the same worker over the same file, and a full-text walk started at
+   *  open time otherwise competes with the first folder the user sees. */
+  let pendingFolderLoad: Promise<unknown> = Promise.resolve()
+
   /** Register a source and run the shared open -> index flow. This is the
    *  single real entry point for turning an id into a live `Source`, reached
    *  from a fresh drop, a boot-time silent restore, and a manual Reconnect
@@ -339,23 +345,31 @@ export const useApp = create<AppState>((set, get) => {
 
         // Background full-text indexing with progress. Deliberately not
         // awaited: callers only need to wait for the folder tree, not for
-        // indexing (which can run concurrently once initiated).
-        void pst
-          .indexSource(
-            id,
-            Comlink.proxy((done: number, total: number) => {
-              set((s) => ({
-                sources: s.sources.map((src) =>
-                  src.id === id ? { ...src, indexProgress: { done, total } } : src,
-                ),
-              }))
-            }),
+        // indexing (which can run concurrently once initiated). Held until the
+        // first folder listing has landed, so opening a mailbox renders its
+        // messages before the indexer starts reading the whole file.
+        void pendingFolderLoad
+          .catch(() => {})
+          .then(() =>
+            pst
+              .indexSource(
+                id,
+                Comlink.proxy((done: number, total: number) => {
+                  set((s) => ({
+                    sources: s.sources.map((src) =>
+                      src.id === id ? { ...src, indexProgress: { done, total } } : src,
+                    ),
+                  }))
+                }),
+              )
+              .then(() => {
+                set((s) => ({
+                  sources: s.sources.map((src) =>
+                    src.id === id ? { ...src, indexed: true } : src,
+                  ),
+                }))
+              }),
           )
-          .then(() => {
-            set((s) => ({
-              sources: s.sources.map((src) => (src.id === id ? { ...src, indexed: true } : src)),
-            }))
-          })
       })
       .catch((err: unknown) => {
         const raw = err instanceof Error ? err.message : String(err)
@@ -677,7 +691,7 @@ export const useApp = create<AppState>((set, get) => {
         messageContent: null,
         contentLoading: false,
       })
-      pst
+      pendingFolderLoad = pst
         .getFolderMessages(sourceId, folderId)
         .then(({ messages, unreadable }) => {
           const sel = get().selection
@@ -702,7 +716,7 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     selectMessage: (messageId) => {
-      const sourceId = get().selection.sourceId
+      const { sourceId, folderId } = get().selection
       set((s) => ({
         selection: { ...s.selection, messageId },
         messageContent: null,
@@ -710,7 +724,7 @@ export const useApp = create<AppState>((set, get) => {
       }))
       if (!messageId || !sourceId) return
       pst
-        .getMessageContent(sourceId, messageId)
+        .getMessageContent(sourceId, messageId, folderId ?? undefined)
         .then((content) => {
           const sel = get().selection
           if (sel.messageId !== messageId || sel.sourceId !== sourceId) return
@@ -768,7 +782,10 @@ export const useApp = create<AppState>((set, get) => {
         contentLoading: true,
       }))
       pst
-        .getMessageContent(hit.sourceId, hit.messageId)
+        // The hit's folder may never have been listed this session (a warm
+        // search-index cache skips the folder walk), so name it: the worker
+        // loads that folder on demand rather than coming back empty.
+        .getMessageContent(hit.sourceId, hit.messageId, hit.folderId)
         .then((content) => {
           const sel = get().selection
           if (sel.messageId !== hit.messageId || sel.sourceId !== hit.sourceId) return
@@ -782,12 +799,14 @@ export const useApp = create<AppState>((set, get) => {
         })
     },
 
-    toggleExport: (sourceId, messageId) =>
+    toggleExport: (sourceId, messageId, folderId) =>
       set((s) => {
         const key = `${sourceId}:${messageId}`
         const next = { ...s.exportSel }
         if (next[key]) delete next[key]
-        else next[key] = { sourceId, messageId }
+        // Remember the folder: a message picked from search results may live in
+        // a folder that was never listed, and the worker needs it to resolve.
+        else next[key] = { sourceId, messageId, folderId }
         return { exportSel: next }
       }),
 
@@ -801,7 +820,7 @@ export const useApp = create<AppState>((set, get) => {
       // always retry.
       const safety = setTimeout(() => set({ exporting: false }), 30000)
       // allSettled, not all: one unloadable message must not sink the whole merge.
-      Promise.allSettled(picks.map((p) => pst.getMessageContent(p.sourceId, p.messageId)))
+      Promise.allSettled(picks.map((p) => pst.getMessageContent(p.sourceId, p.messageId, p.folderId)))
         .then((results) => {
           const valid = results
             .filter((r): r is PromiseFulfilledResult<MessageContent | null> => r.status === 'fulfilled')
@@ -822,7 +841,7 @@ export const useApp = create<AppState>((set, get) => {
       set({ exporting: true })
       const safety = setTimeout(() => set({ exporting: false }), 30000)
       pst
-        .getMessageContent(sourceId, messageId)
+        .getMessageContent(sourceId, messageId, get().selection.folderId ?? undefined)
         .then((content) => {
           if (content) printHtmlDocument(buildPrintDocument([content]))
         })
@@ -837,7 +856,7 @@ export const useApp = create<AppState>((set, get) => {
       set({ exporting: true })
       const safety = setTimeout(() => set({ exporting: false }), 30000)
       pst
-        .getMessageContent(sourceId, messageId)
+        .getMessageContent(sourceId, messageId, get().selection.folderId ?? undefined)
         .then(async (content) => {
           if (!content) return
           const files: EmlAttachment[] = []

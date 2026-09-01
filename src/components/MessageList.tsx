@@ -114,7 +114,7 @@ const MessageRow = memo(function MessageRow({
   exportChecked: boolean
   sourceId: string | null
   onSelect: (messageId: string) => void
-  onToggleExport: (sourceId: string, messageId: string) => void
+  onToggleExport: (sourceId: string, messageId: string, folderId?: string) => void
 }) {
   // Contacts and distribution lists have no real sender; their name lives in the
   // subject, so show that in bold rather than an internal owner field.
@@ -137,7 +137,7 @@ const MessageRow = memo(function MessageRow({
         <input
           type="checkbox"
           checked={exportChecked}
-          onChange={() => sourceId && onToggleExport(sourceId, message.id)}
+          onChange={() => sourceId && onToggleExport(sourceId, message.id, message.folderId)}
           className="h-4 w-4 cursor-pointer accent-sky-500"
         />
       </label>

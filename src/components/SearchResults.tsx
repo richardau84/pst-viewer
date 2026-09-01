@@ -127,7 +127,7 @@ const HitRow = memo(function HitRow({
   selected: boolean
   exportChecked: boolean
   onOpen: (hit: SearchHit) => void
-  onToggleExport: (sourceId: string, messageId: string) => void
+  onToggleExport: (sourceId: string, messageId: string, folderId?: string) => void
 }) {
   return (
     <div
@@ -143,7 +143,7 @@ const HitRow = memo(function HitRow({
         <input
           type="checkbox"
           checked={exportChecked}
-          onChange={() => onToggleExport(hit.sourceId, hit.messageId)}
+          onChange={() => onToggleExport(hit.sourceId, hit.messageId, hit.folderId)}
           className="h-4 w-4 cursor-pointer accent-sky-500"
         />
       </label>

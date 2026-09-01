@@ -3,6 +3,7 @@ import MiniSearch from 'minisearch'
 import { parseTnef, type TnefAttachment } from '../lib/tnef'
 import { extractSmime } from '../lib/smime'
 import { fingerprint } from '../lib/files'
+import { createChunkReader } from '../lib/chunkReader'
 import {
   deleteChunkedCache,
   deleteFolderTreeCache,
@@ -76,6 +77,11 @@ interface SourceEntry {
   tnef: Map<string, TnefAttachment[]>
   /** For .msg sources: files that failed to parse, counted per folder. */
   extraUnreadable?: Map<string, number>
+  /** One in-flight-or-settled enumeration per folder, so revisiting a folder
+   *  is free and two callers racing the same folder (the user clicking it
+   *  while the indexer reaches it) share a single parse instead of doubling
+   *  the reads. */
+  folderLoads: Map<string, Promise<FolderMessages>>
   /** `{ size, lastModified }` off the opened File, set once in `openSource`;
    *  a mismatch on reconnect means the file changed and the cache is stale. */
   fingerprint: { size: number; lastModified: number }
@@ -196,18 +202,10 @@ function stripHtml(html: string): string {
     .trim()
 }
 
-/** A random-access reader over a File: reads only the bytes asked for. */
+/** A random-access reader over the opened File. See `src/lib/chunkReader.ts`
+ *  for why this is chunked and cached rather than a slice per read. */
 function makeReader(file: File): ReadFileApi {
-  return {
-    readFile: async (buffer, offset, length, position) => {
-      const slice = file.slice(position, position + length)
-      const ab = await slice.arrayBuffer()
-      const src = new Uint8Array(ab)
-      new Uint8Array(buffer).set(src, offset)
-      return src.byteLength
-    },
-    close: async () => {},
-  }
+  return createChunkReader(file)
 }
 
 function safe<T>(fn: () => T, fallback: T): T {
@@ -224,6 +222,98 @@ async function safeAsync<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   } catch {
     return fallback
   }
+}
+
+/** Map over `count` indices with at most `limit` calls in flight, keeping the
+ *  results in index order. The parser is a long chain of small awaited reads,
+ *  so overlapping independent items is what turns read latency into throughput
+ *  — the chunk cache in `makeReader` collapses whatever overlaps. */
+async function mapLimit<T>(
+  count: number,
+  limit: number,
+  fn: (index: number) => Promise<T>,
+): Promise<T[]> {
+  const out = new Array<T>(count)
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, count) }, async () => {
+    for (;;) {
+      const i = next++
+      if (i >= count) return
+      out[i] = await fn(i)
+    }
+  })
+  await Promise.all(workers)
+  return out
+}
+
+/** A counting semaphore, for bounding work that isn't a flat list of indices
+ *  (the recursive folder walk) and so can't use `mapLimit`. */
+function createLimiter(limit: number) {
+  let active = 0
+  const waiting: (() => void)[] = []
+  return async function run<T>(fn: () => Promise<T>): Promise<T> {
+    if (active >= limit) await new Promise<void>((resolve) => waiting.push(resolve))
+    active++
+    try {
+      return await fn()
+    } finally {
+      active--
+      waiting.shift()?.()
+    }
+  }
+}
+
+/** How many message/folder loads to keep in flight. High enough to hide read
+ *  latency, low enough that a huge folder doesn't pin thousands of half-parsed
+ *  messages at once. */
+const LOAD_CONCURRENCY = 32
+
+/** Concurrent folder walks during the tree build, and concurrent subfolder
+ *  loads within one walk. Folders are far fewer than messages and each costs
+ *  only a property-context read, so both stay modest — the product of the two
+ *  is what is actually in flight. */
+const TREE_CONCURRENCY = 8
+const SUBFOLDER_CONCURRENCY = 8
+
+/** Indexing runs behind the user's own clicks, so it takes a smaller share of
+ *  the read queue than an interactive folder load. */
+const INDEX_CONCURRENCY = 16
+
+/** Enumerate a folder's subfolders in parallel.
+ *
+ *  `getSubFolders()` resolves them one at a time, each costing a property-context
+ *  read. Priming the provider with `getSubFolderCount()` first is deliberate:
+ *  the library builds it behind a non-reentrant latch, so concurrent first calls
+ *  would each build the target list. Falls back to `getSubFolders()` for the
+ *  synthetic `.msg` folders, which don't implement the indexed API. */
+async function listSubFolders(folder: IPSTFolder): Promise<IPSTFolder[]> {
+  if (typeof folder.getSubFolderCount !== 'function') {
+    return safeAsync(() => folder.getSubFolders(), [] as IPSTFolder[])
+  }
+  const count = await safeAsync(() => folder.getSubFolderCount(), 0)
+  if (count === 0) return []
+  const subs = await safeAsync(
+    () => mapLimit(count, SUBFOLDER_CONCURRENCY, (i) => safeAsync(() => folder.getSubFolder(i), null)),
+    [] as (IPSTFolder | null)[],
+  )
+  return subs.filter((f): f is IPSTFolder => f !== null)
+}
+
+/** Enumerate a folder's messages in parallel; see `listSubFolders` for why the
+ *  count is fetched first. Returns nulls in place of messages that failed to
+ *  parse so callers can still report a salvage count. */
+async function listEmails(folder: IPSTFolder): Promise<(IPSTMessage | null)[] | null> {
+  if (typeof folder.getEmailCount !== 'function') {
+    return safeAsync(() => folder.getEmails() as Promise<(IPSTMessage | null)[]>, null)
+  }
+  let count: number
+  try {
+    count = await folder.getEmailCount()
+  } catch {
+    return null // the contents table itself is unreadable
+  }
+  if (count === 0) return []
+  return mapLimit(count, LOAD_CONCURRENCY, (i) => safeAsync(() => folder.getEmail(i), null))
 }
 
 function toMeta(m: IPSTMessage, folderId: string): MessageMeta {
@@ -253,15 +343,24 @@ function isHiddenFolder(folder: IPSTFolder): boolean {
   return v === true || v === 1
 }
 
-async function buildFolderTree(folder: IPSTFolder, entry: SourceEntry): Promise<FolderNode> {
+/**
+ * Walk a folder subtree, registering every folder on `entry.folders`.
+ *
+ * Sibling subtrees are independent, so they're walked together — a mailbox
+ * walked strictly depth-first is one long chain of single small reads, each
+ * paying its own latency. `limit` is a single semaphore shared by the whole
+ * walk (not a per-level cap), so a deep tree can't multiply out to
+ * concurrency^depth folders in flight.
+ */
+async function buildFolderTree(
+  folder: IPSTFolder,
+  entry: SourceEntry,
+  limit = createLimiter(TREE_CONCURRENCY),
+): Promise<FolderNode> {
   const id = String(folder.primaryNodeId)
   entry.folders.set(id, folder)
-  const subs = await safeAsync(() => folder.getSubFolders(), [] as IPSTFolder[])
-  const children: FolderNode[] = []
-  for (const sub of subs) {
-    if (isHiddenFolder(sub)) continue
-    children.push(await buildFolderTree(sub, entry))
-  }
+  const subs = (await limit(() => listSubFolders(folder))).filter((sub) => !isHiddenFolder(sub))
+  const children = await Promise.all(subs.map((sub) => buildFolderTree(sub, entry, limit)))
   return {
     id,
     name: safe(() => folder.displayName, '') || '(unnamed folder)',
@@ -372,6 +471,54 @@ async function buildSearchDoc(
     date: (delivery ?? submit)?.getTime() ?? null,
     hasAttachments: safe(() => m.hasAttachments, false),
   }
+}
+
+/**
+ * Enumerate one folder's messages, register the live handles on the entry, and
+ * return their list metadata. Memoised per folder on the entry (see
+ * `folderLoads`) — it is the single place a message handle comes into
+ * existence, reached from the message list, from opening a search hit in a
+ * folder that was never listed, and from the background indexer alike.
+ */
+function loadFolderMessages(entry: SourceEntry, folderId: string): Promise<FolderMessages> {
+  const existing = entry.folderLoads.get(folderId)
+  if (existing) return existing
+
+  const folder = entry.folders.get(folderId)
+  if (!folder) return Promise.resolve({ messages: [], unreadable: 0 })
+
+  const load = (async (): Promise<FolderMessages> => {
+    const emails = await listEmails(folder)
+    const metas: MessageMeta[] = []
+    let failed = 0
+    for (const m of emails ?? []) {
+      // A null slot is a message whose own parse failed; skip it rather than
+      // failing the folder, so a damaged file still shows what survives.
+      if (!m) {
+        failed++
+        continue
+      }
+      try {
+        entry.messages.set(String(m.primaryNodeId), m)
+        metas.push(toMeta(m, folderId))
+      } catch {
+        failed++
+      }
+    }
+    // If the whole table was unreadable, fall back to the folder's declared
+    // count so the user still learns the contents are damaged.
+    const unreadable =
+      emails === null
+        ? Math.max(safe(() => folder.contentCount, 0), 1)
+        : failed + (entry.extraUnreadable?.get(folderId) ?? 0)
+    return { messages: metas, unreadable }
+  })()
+
+  // Don't memoise a rejection: a transient failure shouldn't make the folder
+  // permanently empty for the rest of the session.
+  entry.folderLoads.set(folderId, load)
+  void load.catch(() => entry.folderLoads.delete(folderId))
+  return load
 }
 
 const stripExt = (name: string) => name.replace(/\.[^.]+$/, '')
@@ -1121,6 +1268,7 @@ const api = {
       attachments: new Map(),
       searchIds: new Set(),
       tnef: new Map(),
+      folderLoads: new Map(),
       fingerprint: fp,
       persist,
       ready: readyPromise,
@@ -1204,6 +1352,7 @@ const api = {
       attachments: new Map(),
       searchIds: new Set(),
       tnef: new Map(),
+      folderLoads: new Map(),
       // .msg/.eml batches never persist: no single stable file identity to
       // key a searchDocs cache row by, so the fingerprint is never consulted.
       fingerprint: { size: 0, lastModified: 0 },
@@ -1268,43 +1417,29 @@ const api = {
     const entry = sources.get(sourceId)
     if (!entry) return { messages: [], unreadable: 0 }
     await entry.ready
-    const folder = entry.folders.get(folderId)
-    if (!folder) return { messages: [], unreadable: 0 }
-
-    let emails: IPSTMessage[] = []
-    let enumFailed = false
-    try {
-      emails = await folder.getEmails()
-    } catch {
-      enumFailed = true
-    }
-    const metas: MessageMeta[] = []
-    let failed = 0
-    for (const m of emails) {
-      try {
-        entry.messages.set(String(m.primaryNodeId), m)
-        metas.push(toMeta(m, folderId))
-      } catch {
-        // Skip an individual unreadable message rather than failing the folder.
-        failed++
-      }
-    }
-    // If the whole table was unreadable, fall back to the folder's declared count
-    // so the user still learns the contents are damaged.
-    const unreadable = enumFailed
-      ? Math.max(safe(() => folder.contentCount, 0), 1)
-      : failed + (entry.extraUnreadable?.get(folderId) ?? 0)
-    return { messages: metas, unreadable }
+    return loadFolderMessages(entry, folderId)
   },
 
-  /** Fetch full body + headers + inline images + attachment list for one message. */
+  /** Fetch full body + headers + inline images + attachment list for one message.
+   *
+   *  `folderId` is optional but worth passing: message handles only exist once
+   *  their folder has been enumerated, and with a warm search-index cache no
+   *  folder is enumerated up front. Given the folder, an id that isn't resident
+   *  yet (a search hit in a folder the user never opened) loads that folder
+   *  first instead of coming back empty. */
   async getMessageContent(
     sourceId: string,
     messageId: string,
+    folderId?: string,
   ): Promise<MessageContent | null> {
     const entry = sources.get(sourceId)
     if (!entry) return null
-    const m = entry.messages.get(messageId)
+    let m = entry.messages.get(messageId)
+    if (!m && folderId) {
+      await entry.ready
+      await loadFolderMessages(entry, folderId)
+      m = entry.messages.get(messageId)
+    }
     if (!m) return null
     return buildMessageContent(m, messageId, entry)
   },
@@ -1395,14 +1530,11 @@ const api = {
    * warms the message + attachment caches as a side effect.
    *
    * For a persistable source, first tries a cached index written by a prior
-   * session (see the `searchDocs` store in `src/lib/idb.ts`). On a hit this
-   * skips the expensive part (body extraction via `buildSearchDoc`), but
-   * still walks every folder's `getEmails()` — enumeration only — because
-   * that's the *only* code that populates `entry.messages`, and
-   * `getMessageContent` is a pure `entry.messages.get(id)` lookup. Skipping
-   * it on a cache hit would leave any message in a folder the user never
-   * manually opened unreadable: `openHit` (clicking a search result) calls
-   * `getMessageContent` directly, without going through `getFolderMessages`.
+   * session (see the `searchDocs` store in `src/lib/idb.ts`). A hit skips the
+   * walk entirely — no folder is enumerated, so reopening a remembered mailbox
+   * costs only the b-tree load and the tree walk. Message handles are then
+   * minted lazily by `loadFolderMessages`, which `getMessageContent` calls for
+   * itself when a search hit lands in a folder the user never opened.
    */
   async indexSource(
     sourceId: string,
@@ -1421,12 +1553,7 @@ const api = {
         null,
       )
       if (cached) {
-        for (const folder of entry.folders.values()) {
-          if (!sources.has(sourceId)) return // source removed mid-restore
-          const emails = await safeAsync(() => folder.getEmails(), [])
-          for (const m of emails) entry.messages.set(String(m.primaryNodeId), m)
-        }
-        if (!sources.has(sourceId)) return
+        if (!sources.has(sourceId)) return // source removed mid-restore
         // Defensive de-dupe even after the evict-before-reopen fix above:
         // MiniSearch rejects re-adding an id already present.
         const fresh = cached.filter((d) => !searchIndex.has(d.id))
@@ -1441,26 +1568,30 @@ const api = {
     }
 
     // Miss (no cache, not persistable, or a fingerprint/version mismatch):
-    // run the full walk unchanged, accumulating every doc for the cache write.
+    // walk every folder, accumulating every doc for the cache write.
     const allDocs: SearchDoc[] = []
-    for (const [folderId, folder] of entry.folders) {
+    for (const folderId of [...entry.folders.keys()]) {
       if (!sources.has(sourceId)) return // source removed mid-index
-      const emails = await safeAsync(() => folder.getEmails(), [])
-      const docs: SearchDoc[] = []
-      for (const m of emails) {
-        const msgId = String(m.primaryNodeId)
-        entry.messages.set(msgId, m)
-        const id = `${sourceId}:${msgId}`
-        done++
-        if (searchIndex.has(id)) continue
-        try {
-          const doc = await buildSearchDoc(sourceId, folderId, msgId, m, entry)
-          docs.push(doc)
-          searchDocs.set(id, doc)
-          entry.searchIds.add(id)
-        } catch {
-          // skip an unreadable message
-        }
+      // Share the memoised enumeration, so a folder the user has already
+      // opened — or opens next — is never parsed a second time.
+      const { messages: metas } = await loadFolderMessages(entry, folderId)
+      const items = metas
+        .map((meta) => ({ msgId: meta.id, m: entry.messages.get(meta.id) }))
+        .filter((it): it is { msgId: string; m: IPSTMessage } => it.m !== undefined)
+      // Bodies are the expensive part; overlapping them is what keeps the
+      // indexer from being a long serial chain of one-block reads.
+      const docs = (
+        await mapLimit(items.length, INDEX_CONCURRENCY, async (i) => {
+          const { msgId, m } = items[i]
+          const id = `${sourceId}:${msgId}`
+          done++
+          if (searchIndex.has(id)) return null
+          return safeAsync(() => buildSearchDoc(sourceId, folderId, msgId, m, entry), null)
+        })
+      ).filter((d): d is SearchDoc => d !== null)
+      for (const doc of docs) {
+        searchDocs.set(doc.id, doc)
+        entry.searchIds.add(doc.id)
       }
       // If the source was closed while reading this folder, drop what we staged
       // instead of leaving orphaned docs in the shared search index.
