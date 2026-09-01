@@ -72,7 +72,7 @@ export function SearchResults() {
             </>
           ) : (
             <>
-              <div>No matches for “{query}”.</div>
+              <div>{query ? `No matches for “${query}”.` : 'No messages match these filters.'}</div>
               {anyIndexing ? (
                 <div className="text-xs text-slate-400">Still indexing, try again shortly.</div>
               ) : null}

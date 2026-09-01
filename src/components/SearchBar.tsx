@@ -1,19 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useApp } from '../store/store'
-import type { SearchFilters } from '../types'
+import { activeFilterCount } from '../lib/searchFilters'
 import { SearchFiltersDialog } from './SearchFiltersDialog'
 import { Close, Filter, Search, Spinner } from './icons'
-
-/** Number of advanced filters currently narrowing the search, for the button badge. */
-function activeFilterCount(f: SearchFilters): number {
-  let n = 0
-  if (f.dateFrom != null || f.dateTo != null) n++
-  if (f.folder) n++
-  if (f.from.trim()) n++
-  if (f.to.trim()) n++
-  if (f.hasAttachments) n++
-  return n
-}
 
 export function SearchBar() {
   const query = useApp((s) => s.searchQuery)
@@ -46,11 +35,11 @@ export function SearchBar() {
         {searching ? (
           <Spinner className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-sky-400" />
         ) : (
-          query && (
+          (query || filterCount > 0) && (
             <button
               onClick={clearSearch}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-200"
-              data-tip="Clear search"
+              data-tip="Clear search and filters"
             >
               <Close className="h-4 w-4" />
             </button>

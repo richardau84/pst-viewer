@@ -4,6 +4,7 @@ import { parseTnef, type TnefAttachment } from '../lib/tnef'
 import { extractSmime } from '../lib/smime'
 import { fingerprint } from '../lib/files'
 import { createChunkReader } from '../lib/chunkReader'
+import { hasActiveFilters } from '../lib/searchFilters'
 import {
   deleteChunkedCache,
   deleteFolderTreeCache,
@@ -163,28 +164,40 @@ const searchIndex = new MiniSearch<SearchDoc>({
   storeFields: ['sourceId', 'messageId', 'folderId', 'subject', 'from', 'date', 'hasAttachments'],
   searchOptions: { boost: { subject: 3, from: 2 }, fuzzy: 0.2, prefix: true },
 })
-type IndexedSearchResult = ReturnType<typeof searchIndex.search>[number]
 
-/** Kept alongside the search index so the `to` filter (not a stored field) can
- *  still be checked against a hit's full recipient list. */
+/** Every indexed doc, kept alongside the search index. Filter checks read from
+ *  here rather than from an index hit's stored fields, so a filter can match on
+ *  anything a doc holds (`to` recipients, say, which aren't a stored field).
+ *  Written and discarded in lockstep with `searchIndex`. */
 const searchDocs = new Map<string, SearchDoc>()
 
-/** Whether a search hit satisfies the optional advanced filters. The `to`
- *  recipients aren't stored on the index result, so fall back to the full doc. */
-function matchesSearchFilters(r: IndexedSearchResult, f: SearchFilters): boolean {
-  const date = (r.date as number | null) ?? null
+/** Whether an indexed message satisfies the optional advanced filters. */
+function matchesSearchFilters(doc: SearchDoc, f: SearchFilters): boolean {
+  const date = doc.date
   if (f.dateFrom != null && (date == null || date < f.dateFrom)) return false
   if (f.dateTo != null && (date == null || date > f.dateTo)) return false
-  if (f.folder && (r.sourceId !== f.folder.sourceId || r.folderId !== f.folder.folderId)) return false
-  if (f.hasAttachments && !r.hasAttachments) return false
-  if (f.from.trim() && !String(r.from ?? '').toLowerCase().includes(f.from.trim().toLowerCase())) {
+  if (f.folder && (doc.sourceId !== f.folder.sourceId || doc.folderId !== f.folder.folderId)) {
     return false
   }
-  if (f.to.trim()) {
-    const doc = searchDocs.get(r.id as string)
-    if (!doc || !doc.to.toLowerCase().includes(f.to.trim().toLowerCase())) return false
-  }
+  if (f.hasAttachments && !doc.hasAttachments) return false
+  if (f.from.trim() && !doc.from.toLowerCase().includes(f.from.trim().toLowerCase())) return false
+  if (f.to.trim() && !doc.to.toLowerCase().includes(f.to.trim().toLowerCase())) return false
   return true
+}
+
+/** A doc as a search hit. `score` is meaningless for a filter-only browse, so
+ *  callers pass 0 there. */
+function docToHit(doc: SearchDoc, score: number): SearchHit {
+  return {
+    sourceId: doc.sourceId,
+    messageId: doc.messageId,
+    folderId: doc.folderId,
+    subject: doc.subject,
+    from: doc.from,
+    date: doc.date,
+    hasAttachments: doc.hasAttachments,
+    score,
+  }
 }
 
 function stripHtml(html: string): string {
@@ -1620,10 +1633,23 @@ const api = {
     }
   },
 
-  /** Fuzzy full-text search across all indexed sources. */
+  /** Fuzzy full-text search across all indexed sources.
+   *
+   *  With no query text but at least one active filter, browses by filter alone
+   *  ("every mail in this folder with an attachment") — scanning the docs
+   *  instead of the term index, newest first, since there's nothing to rank by.
+   */
   async search(query: string, limit = 100, filters?: SearchFilters): Promise<SearchHit[]> {
     const q = query.trim()
-    if (!q) return []
+    if (!q) {
+      if (!filters || !hasActiveFilters(filters)) return []
+      const hits: SearchHit[] = []
+      for (const doc of searchDocs.values()) {
+        if (matchesSearchFilters(doc, filters)) hits.push(docToHit(doc, 0))
+      }
+      hits.sort((a, b) => (b.date ?? 0) - (a.date ?? 0))
+      return hits.slice(0, limit)
+    }
     // Terms with a digit (numbers, ids, reference codes) are specific, so match
     // them exactly. Fuzzy matching on an id finds near-misses that are rarely
     // wanted and, worse, do not contain the typed text so nothing highlights.
@@ -1634,7 +1660,13 @@ const api = {
     })
     // Filter before slicing to the limit, so a narrow filter doesn't get starved
     // by unrelated matches that happened to score higher.
-    const matched = filters ? results.filter((r) => matchesSearchFilters(r, filters)) : results
+    const matched =
+      filters && hasActiveFilters(filters)
+        ? results.filter((r) => {
+            const doc = searchDocs.get(r.id as string)
+            return doc != null && matchesSearchFilters(doc, filters)
+          })
+        : results
     return matched.slice(0, limit).map((r) => ({
       sourceId: r.sourceId as string,
       messageId: r.messageId as string,

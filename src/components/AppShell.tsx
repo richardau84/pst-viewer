@@ -4,6 +4,7 @@ import { DropZone } from './DropZone'
 import { NavPane } from './NavPane'
 import { MessageList } from './MessageList'
 import { ReaderPane } from './ReaderPane'
+import { hasActiveFilters } from '../lib/searchFilters'
 import { SearchBar } from './SearchBar'
 import { SearchResults } from './SearchResults'
 import { Resizer } from './Resizer'
@@ -13,7 +14,11 @@ import { Printer, Spinner } from './icons'
 export function AppShell() {
   const sources = useApp((s) => s.sources)
   const addFiles = useApp((s) => s.addFiles)
-  const isSearching = useApp((s) => s.searchQuery.trim().length > 0)
+  // Filters with no query text still put the results pane up — that's the view
+  // they narrow, and the folder list ignores them entirely.
+  const isSearching = useApp(
+    (s) => s.searchQuery.trim().length > 0 || hasActiveFilters(s.searchFilters),
+  )
   const navWidth = useApp((s) => s.navWidth)
   const listWidth = useApp((s) => s.listWidth)
   const setNavWidth = useApp((s) => s.setNavWidth)

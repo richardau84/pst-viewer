@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import * as Comlink from 'comlink'
 import { pst } from '../worker/client'
+import { hasActiveFilters } from '../lib/searchFilters'
 import { scanZipForPsts } from '../lib/zip'
 import { buildPrintDocument, printHtmlDocument } from '../lib/printExport'
 import { buildEml, downloadBlob, emlFilename, type EmlAttachment } from '../lib/emlExport'
@@ -755,24 +756,35 @@ export const useApp = create<AppState>((set, get) => {
 
     runSearch: () => {
       const query = get().searchQuery.trim()
-      if (!query) {
+      const filters = get().searchFilters
+      // Filters on their own are a valid search ("everything in this folder with
+      // an attachment"), so only bail when there's neither text nor a filter.
+      if (!query && !hasActiveFilters(filters)) {
         set({ searchResults: [], searching: false })
         return
       }
+      // A response is stale once either input has moved on. Filters compare by
+      // identity: `setSearchFilters` is their only writer and always stores a
+      // fresh object, so applying filters mid-flight can't be clobbered by the
+      // unfiltered response for the same query landing after it.
+      const stale = () => get().searchQuery.trim() !== query || get().searchFilters !== filters
       set({ searching: true })
       pst
-        .search(query, 200, get().searchFilters)
+        .search(query, 200, filters)
         .then((searchResults) => {
-          if (get().searchQuery.trim() !== query) return // stale
+          if (stale()) return
           const { searchSortBy, searchSortDir } = get()
           set({ searchResults: sortHits(searchResults, searchSortBy, searchSortDir), searching: false })
         })
         .catch(() => {
-          if (get().searchQuery.trim() === query) set({ searchResults: [], searching: false })
+          if (!stale()) set({ searchResults: [], searching: false })
         })
     },
 
-    clearSearch: () => set({ searchQuery: '', searchResults: [], searching: false }),
+    /** Drops the filters too: they drive the results pane on their own now, so
+     *  clearing only the text would strand the user in a filtered view. */
+    clearSearch: () =>
+      set({ searchQuery: '', searchResults: [], searching: false, searchFilters: EMPTY_SEARCH_FILTERS }),
 
     openHit: (hit) => {
       set((s) => ({
